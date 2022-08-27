@@ -1,0 +1,65 @@
+name: Retain
+version: "1.0"
+author: Reiuji <github@reiuji.ch>
+about: Backup tool, targeting Backblaze's B2 Cloud Storage
+setting: ArgRequiredElseHelp
+subcommands:
+  - auth:
+      about: Authenticate with B2
+  - includes:
+      about: List all directories to be considered for upload
+  - filters:
+      about: List all filters in use
+  - include:
+      about: Add a file or directory to be considered for upload
+      args:
+        - param:
+            help: Path to include
+            required: true
+            index: 1
+  - filter:
+      about: Add a new filter to remove unwanted files from being uploaded
+      args:
+        - param:
+            help: Filter string
+            required: true
+            index: 1
+  - ignore:
+      about: Ignore a file or directory that was previously added via 'include'
+      args:
+        - param:
+            help: Path to ignore
+            required: true
+            index: 1
+  - unfilter:
+      about: Removes an existing filter
+      args:
+        - param:
+            help: Filter to remove
+            required: true
+            index: 1
+  - explain:
+      about: Explains why a particular path is or is not included
+      args:
+        - param:
+            help: Path to test
+            required: true
+            index: 1
+  - cost:
+      about: Compute the cost per month of including the given path
+      args:
+        - param:
+            help: Path to start from
+            required: true
+            index: 1
+  - stats:
+      about: Print total size of backup, number of files and estimated cost
+  - limit:
+      about: Sets bandwidth limit in KB/s
+      args:
+        - param:
+            help: Amount of KB/s
+            required: true
+            index: 1
+  - start:
+      about: Starts the backup server

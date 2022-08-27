@@ -1,0 +1,6 @@
+[workspace]
+
+members = [
+    "retain-rs",
+    "backblaze-api",
+]
