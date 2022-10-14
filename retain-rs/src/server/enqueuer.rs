@@ -79,9 +79,11 @@ pub async fn enqueue_files(config: Arc<RwLock<Config>>, sender: Sender<std::path
                 if !rules.should_upload(&path) {
                     continue;
                 }
+
+                // Note: symlinks are ignored
                 if path.is_file() {
                     sender.send(path).await.expect("Upload close rx closed");
-                } else {
+                } else if path.is_dir() {
                     dirs_to_check.push(path);
                 }
                 continue;
