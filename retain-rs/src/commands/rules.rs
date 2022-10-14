@@ -6,7 +6,7 @@ use backblaze_api::api::{b2_authorize_account, list_all_file_names};
 use crate::commands::{Command, Response};
 use crate::commands::ipc::IPCConnection;
 use crate::{Config, format_bytes};
-use crate::stream::encrypt::get_encrypted_size;
+use crate::stream::get_encrypted_size;
 
 pub async fn handle(args: &ArgMatches, ipc: &mut IPCConnection, action: Command) -> Result<(), ()> {
     let arg = args.value_of("param").expect("Parameter missing");

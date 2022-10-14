@@ -61,5 +61,28 @@ subcommands:
             help: Amount of KB/s
             required: true
             index: 1
+  - search:
+      about: Search in backed up files using a glob-pattern
+      args:
+        - param:
+            help: Glob pattern
+            required: true
+            index: 1
+  - restore:
+      about: Restores all files matching the given glob-pattern. Can restore to the same path, a new path and optionally replace existing files.
+      args:
+        - pattern:
+            help: Glob pattern
+            required: true
+            index: 1
+        - target:
+            help: Directory to restore files to
+            required: false
+            index: 2
+        - overwrite:
+            help: Overwrite existing files when restoring
+            required: false
+            short: o
+            long: overwrite
   - start:
       about: Starts the backup server

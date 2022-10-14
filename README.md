@@ -19,7 +19,7 @@ While this program is intended to follow the Backblaze Terms of Service, any usa
 
 While this program is intended to work correctly, keep in mind you're trusting some "random" person to write correct backup and encryption logic. Anticipate potential failures and keep multiple backups of your data.
 
-## Import info before using
+## Important info before using
 
 ### Durability, Integrity and Recovery
 No stateful information about your files is kept on the local disk. All files are encrypted with an authenticated cipher, meaning B2 can't forge files that decrypt correctly.
@@ -93,6 +93,15 @@ There are three further commands related to including and filtering paths:
 * `cost <path>`: Gives an estimate of how much it would cost to add the given path (taking filters and overhead into account) 
 * `explain <path>`: Explains why a given path is, or is not, backed up. This will print which includes and filters it applies for the given path
 * `stats`: Prints out how much storage we're currently using on B2 and how much we will use when everything is backed up, along with the estimated costs.
+
+### Restoring files
+There are two commands used to restore files:
+
+* `search <glob>`: Outputs all backed up files that matches the glob-pattern
+* `restore <glob> [path] [--overwrite]`: Download all files matching the glob-pattern
+
+By default, `restore` will attempt to place files in their original locations. It will not overwrite existing files, unless the `--overwrite` switch is given.  
+An optional `path` can be provided, which will instead restore all files to the target directory. 
 
 ### Backing up temporary/portable storage
 While you _can_ `include` things like USB-drives, it's really **not** a good idea. 

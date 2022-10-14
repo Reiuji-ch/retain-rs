@@ -1,10 +1,12 @@
-use std::path::{Path, PathBuf};
+use std::ops::Deref;
+use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use chacha20poly1305::{Key, XChaCha20Poly1305};
 use chacha20poly1305::aead::{Aead, NewAead};
+use glob::Pattern;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, RwLock};
@@ -16,7 +18,7 @@ use crate::commands::{Command, ipc, Response};
 use crate::config::Config;
 use crate::{format_bytes, retry_forever};
 use crate::server::supervisor::supervise;
-use crate::stream::encrypt::nonce_from_u128;
+use crate::stream::nonce_from_u128;
 
 mod supervisor;
 mod enqueuer;
@@ -28,6 +30,7 @@ mod cleaner;
 // Type that holds files we know are stored in B2 (file_path, modified_timestamp, name_nonce)
 // We need to re-use the same filename to replace files correctly
 // Instead of storing the whole encrypted name, we can just store the nonce
+// Timestamp is milliseconds since Unix Epoch
 type KnownFiles = Arc<Mutex<Vec<(PathBuf, u128, u128)>>>;
 
 /// Starts the main processing loop
@@ -47,9 +50,10 @@ pub async fn serve() {
     std::fs::write(portfile_location, &addr.port().to_string()).expect("Failed to write portfile");
     println!("Running on: {}", addr);
 
+    let known_files: KnownFiles = Arc::new(Mutex::new(Vec::new()));
     let api_auth: Arc<RwLock<Option<Auth>>> = Arc::new(RwLock::new(None));
     let config: Arc<RwLock<Config>> = Arc::new(RwLock::new(config));
-    let _supervisor_handle = tokio::spawn(supervise(api_auth.clone(), config.clone()));
+    let _supervisor_handle = tokio::spawn(supervise(api_auth.clone(), config.clone(), known_files.clone()));
 
     // Main loop: listen for and process commands
     loop {
@@ -63,6 +67,7 @@ pub async fn serve() {
                 }
                 let api_auth = api_auth.clone();
                 let config = config.clone();
+                let known_files = known_files.clone();
                 tokio::spawn(async move {
                     // Perform IPC handshake to ensure we're on the same protocol/version
                     let mut ipc = match ipc::IPCConnection::try_serverside_from(socket).await {
@@ -174,8 +179,83 @@ pub async fn serve() {
                             let _ = cfg.save();
                             let _ = ipc.send_response(Response::Ok, format!("Set limit to {}/s", format_bytes(amount))).await;
                         }
+                        Command::Search => {
+                            let files = known_files.lock().await;
+                            match files.len() {
+                                0 => {
+                                    let _ = ipc.send_response(Response::Err, format!("Cannot search: list of files have not yet been retrieved (or there are 0 files stored). Try again in a moment.")).await;
+                                }
+                                _ => {
+                                    match Pattern::new(&data) {
+                                        Ok(pattern) => {
+                                            let mut matched_paths = Vec::new();
+                                            for file in files.deref() {
+                                                let path_string = file.0.to_string_lossy();
+                                                if pattern.matches(&path_string) {
+                                                    matched_paths.push(path_string);
+                                                }
+                                            }
+                                            let output = matched_paths.join("\n");
+                                            let _ = ipc.send_response(Response::Ok, output).await;
+                                        }
+                                        Err(_) => {
+                                            let _ = ipc.send_response(Response::Err, format!("Invalid glob pattern")).await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Command::Restore => {
+                            let files = known_files.lock().await;
+                            if files.len() == 0 {
+                                let _ = ipc.send_response(Response::Err, format!("Cannot search: list of files have not yet been retrieved (or there are 0 files stored). Try again in a moment.")).await;
+                                return;
+                            }
+                            let parts: Vec<&str> = data.split("\x1e").collect();
+                            let pattern_str = parts[0];
+                            let target_str = parts[1];
+                            let pattern = match Pattern::new(pattern_str) {
+                                Ok(pattern) => pattern,
+                                Err(_err) => {
+                                    let _ = ipc.send_response(Response::Err, format!("Invalid glob pattern")).await;
+                                    return;
+                                }
+                            };
+                            let target = match target_str {
+                                "" => None,
+                                _ => {
+                                    let path = PathBuf::from(target_str);
+                                    if !path.is_dir() {
+                                        let _ = ipc.send_response(Response::Err, format!("Invalid target directory")).await;
+                                        return;
+                                    }
+                                    Some(path)
+                                },
+                            };
+                            let mut download_queue = Vec::new();
+                            for (path, timestamp, nonce) in &*files {
+                                if pattern.matches_path(&path) {
+                                    download_queue.push((path, timestamp, nonce))
+                                }
+                            }
+                            let download_queue: Vec<(PathBuf, PathBuf, u128 , u128)> = download_queue.into_iter().map(|(path, timestamp, nonce) | {
+                                let restore_path = match &target {
+                                    None => path.to_path_buf(),
+                                    Some(target_root) => {
+                                        let mut target_path = target_root.clone();
+                                        target_path.push(clean_path(&path));
+                                        target_path
+                                    }
+                                };
+                                (path.clone(), restore_path, *timestamp, *nonce)
+                            }).collect();
+
+                            let output = download_queue.into_iter().map(|(path, restore_path, timestamp, nonce)| {
+                                format!("{}\x1f{}\x1f{}\x1f{}", path.to_string_lossy(), restore_path.to_string_lossy(), timestamp, nonce)
+                            }).collect::<Vec<String>>().join("\x1e");
+                            let _ = ipc.send_response(Response::Ok, &output).await;
+                        }
                     }
-                    println!("{:?}", config.read().await);
                 });
             }
             Err(err) => {
@@ -299,4 +379,49 @@ pub fn decrypt_file_name(encoded_name: &str, key: &Key) -> Option<PathBuf> {
         }
     };
     Some(PathBuf::from(path_string))
+}
+
+// 'Clean' a path, converting it to a non-absolute, non-root path
+// On Windows, 'C:/Users/MyUser/Downloads' would turn to 'C/Users/MyUser/Downloads'
+// On non-Windows, '/home/user/Downloads' would turn to 'home/user/Downloads'
+fn clean_path(path: &Path) -> PathBuf {
+    match path.components().next().unwrap() {
+        Component::Prefix(component) => {
+            // Prefixes only exist on Windows. Grab any potential drive letter and remove illegal characters
+            // There _MAY_ be some odd behavior non-drive prefixes, but surely nobody will encounter that
+            let path_string = format!("{}\\", component.as_os_str().to_string_lossy().replace(&[':','\\','/','*','?','"','?','<','>','|'], ""));
+            let mut buf = PathBuf::from(path_string);
+            let remainder = make_relative(path);
+            buf.push(&remainder);
+            buf
+        }
+        Component::RootDir => {
+            make_relative(path)
+        }
+        Component::CurDir => {
+            panic!("Path starts with relative component: {path:?}");
+        }
+        Component::ParentDir => {
+            panic!("Path starts with parent component {path:?}");
+        }
+        Component::Normal(_) => {
+            panic!("Path starts with non-root, non-prefix component {path:?}");
+        }
+    }
+}
+
+// Recursively drops the first component of a path until it is not absolute and has no root
+fn make_relative(path: &Path) -> PathBuf {
+    let path = match path.is_absolute() {
+        true => {
+            PathBuf::from_iter(path.components().skip(1))
+        }
+        false => path.to_path_buf(),
+    };
+    match path.has_root() {
+        true => {
+            PathBuf::from_iter(path.components().skip(1))
+        }
+        false => path.to_path_buf(),
+    }
 }

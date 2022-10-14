@@ -10,6 +10,7 @@ mod b2_cancel_large_file;
 mod b2_list_unfinished_large_files;
 mod b2_list_parts;
 mod b2_hide_file;
+mod b2_download_file_by_name;
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -30,6 +31,7 @@ pub use b2_finish_large_file::b2_finish_large_file;
 pub use b2_cancel_large_file::b2_cancel_large_file;
 pub use b2_list_unfinished_large_files::b2_list_unfinished_large_files;
 pub use b2_list_parts::b2_list_parts;
+pub use b2_download_file_by_name::b2_download_file_by_name;
 use crate::api::b2_upload_file::B2File;
 use crate::{ApiError, Auth};
 

@@ -5,9 +5,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
-use reqwest::{Client, Error as ReqwestError, StatusCode};
+use reqwest::{Client, StatusCode};
 use serde::de::DeserializeOwned;
 use tokio::sync::RwLock;
+
+pub use reqwest::Error as ReqwestError;
 
 static CLIENT: OnceCell<Client> = OnceCell::new();
 // Separate client for uploads with NODELAY and long timeout
@@ -21,10 +23,11 @@ pub fn init() {
         .https_only(true)
         .build()
         .unwrap();
-    // NODELAY and 1 hour timeout
-    // When we have large files, we can lower this to something more reasonable
+    // NODELAY and 20 minutes timeout
+    // Concurrency and large file threshold is automatically set s.t. uploads
+    // should finish after ~10 minutes, regardless of size
     let up_client = reqwest::ClientBuilder::new()
-        .timeout(Duration::from_secs(3600))
+            .timeout(Duration::from_secs(1200))
         .user_agent(format!("retain-rs {}", env!("CARGO_PKG_VERSION")))
         .tcp_nodelay(true)
         .https_only(true)
@@ -91,7 +94,7 @@ impl From<serde_json::Error> for ApiError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Auth {
     pub account_id: String,
     pub authorization_token: String,

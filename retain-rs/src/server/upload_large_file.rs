@@ -13,7 +13,8 @@ use backblaze_api::api::{b2_cancel_large_file, b2_finish_large_file, b2_start_la
 use backblaze_api::{ApiError, Auth};
 use crate::{retry_forever, retry_limited};
 use crate::server::KnownFiles;
-use crate::stream::encrypt::{EncryptingStream, nonce_from_u128};
+use crate::stream::nonce_from_u128;
+use crate::stream::encrypt::EncryptingStream;
 use crate::stream::hash::HashingStream;
 use crate::stream::throttle::ThrottlingStream;
 

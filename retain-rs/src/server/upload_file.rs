@@ -9,7 +9,8 @@ use tokio::sync::mpsc::Sender;
 use tokio_util::codec::{BytesCodec, FramedRead};
 use backblaze_api::api::{b2_upload_file, FileInfo, UploadAuth};
 use crate::server::KnownFiles;
-use crate::stream::encrypt::{EncryptingStream, get_encrypted_size, nonce_from_u128};
+use crate::stream::{get_encrypted_size, nonce_from_u128};
+use crate::stream::encrypt::EncryptingStream;
 use crate::stream::hash::HashingStream;
 use crate::stream::throttle::ThrottlingStream;
 

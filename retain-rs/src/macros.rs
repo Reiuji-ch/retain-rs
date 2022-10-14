@@ -1,6 +1,7 @@
 #[macro_export]
 macro_rules! retry_forever {
     ($timings:expr, $result:ident, $call:tt, $success:tt, $fail:tt) => {
+        use std::time::Duration;
         let mut attempts = 0;
         let backoff = $timings;
         loop {

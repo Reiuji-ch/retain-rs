@@ -3,7 +3,7 @@ use std::ops::Deref;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::MissedTickBehavior;
 use backblaze_api::api::{b2_authorize_account, b2_list_parts, b2_list_unfinished_large_files};
@@ -14,12 +14,12 @@ use crate::server::{cleaner, decrypt_file_name, enqueuer, get_file_list_from_b2,
 use crate::server::resume_large_file::resume_large_file;
 use crate::server::upload_file::upload_file;
 use crate::server::upload_large_file::{cancel_large_file, upload_large_file};
-use crate::stream::encrypt::get_nonces_required;
+use crate::stream::get_nonces_required;
 
 const ABSOLUTE_MAX_CONCURRENT_UPLOADS: u64 = 16;
 const MAXIMUM_ENQUEUED_FILES: usize = 32;
 
-pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<Config>>) {
+pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<Config>>, known_files: KnownFiles) {
 
     // Spawn the authorization supervisor
     // This tasks tries to ensure we always have Some(Auth) in our api_auth
@@ -116,10 +116,12 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
 
     // Vec of (path, modified_timestamp) for files we know are stored in B2
     eprintln!("Retrieving list of known files");
-    let known_files = get_file_list_from_b2(api_auth.clone(), &encryption_key).await;
-    eprintln!("Got file list from B2 -- There are {} files stored", known_files.len());
+    {
+        let files_from_b2 = get_file_list_from_b2(api_auth.clone(), &encryption_key).await;
+        eprintln!("Got file list from B2 -- There are {} files stored", files_from_b2.len());
+        *known_files.lock().await = files_from_b2;
+    }
 
-    let known_files: KnownFiles = Arc::new(Mutex::new(known_files));
     // Keeps track of whiles files are currently uploading, to prevent simultaneous uploads of the same file
     let currently_uploading: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
 

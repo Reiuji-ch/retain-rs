@@ -9,7 +9,7 @@ use backblaze_api::Auth;
 use crate::config::Config;
 use crate::retry_limited;
 use crate::server::KnownFiles;
-use crate::stream::encrypt::nonce_from_u128;
+use crate::stream::nonce_from_u128;
 
 /// Worker that hides files stored in B2 if they are no longer included by the rules
 pub async fn hide_unused(config: Arc<RwLock<Config>>, auth: Arc<RwLock<Option<Auth>>>,known_files: KnownFiles) {

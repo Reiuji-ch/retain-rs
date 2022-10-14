@@ -35,6 +35,7 @@ impl RuleManager {
                 Err(_) => return Err(format!("Invalid pattern: {} in rules ", filter))
             }
         }
+        self.compiled_filters.push(Pattern::new("*.retain-restore-tmp").expect("Failed to compile internal-use filter"));
         self.filters_validated = true;
 
         Ok(())
