@@ -1,3 +1,6 @@
+use std::error::Error;
+use std::fmt::{Display, Formatter};
+use std::io::ErrorKind;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use bytes::BytesMut;
@@ -39,6 +42,19 @@ enum EncReadState {
     Done,
 }
 
+#[derive(Debug)]
+struct EncryptError {
+    message: &'static str,
+}
+
+impl Display for EncryptError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&format!("Encrypt error: {}", self.message))
+    }
+}
+
+impl Error for EncryptError {}
+
 
 impl<S: Stream> EncryptingStream<S> {
     pub fn wrap(stream: S, key: &Key, start_nonce: u128, allocated_nonce: u128) -> Self {
@@ -71,6 +87,17 @@ impl<S: Stream<Item = Result<bytes::BytesMut, tokio::io::Error>>> Stream for Enc
                         this.input_buffer.append(&mut bytes.to_vec());
                         this.output_buffer.clear();
                         while this.input_buffer.len() >= BLOCK_SIZE {
+                            // Check that we aren't using more nonces than we're supposed to
+                            // Ordinarily, we should never hit this, as we tell B2 how big the file will be before sending it
+                            // If we send more bytes than B2 expects, it should fail (since it expects hex-digits-at-end, not more data)
+                            if *this.nonce > *this.nonce_final {
+                                return Poll::Ready(Some(Err(tokio::io::Error::new(
+                                    ErrorKind::Other,
+                                    EncryptError {
+                                        message: "Incorrect number of nonces used (too many)"
+                                    },
+                                ))));
+                            }
                             match this.aead.encrypt(&nonce_from_u128(*this.nonce), &this.input_buffer[0..BLOCK_SIZE]) {
                                 Ok(mut ciphertext) => {
                                     *this.nonce += 1;
@@ -104,6 +131,15 @@ impl<S: Stream<Item = Result<bytes::BytesMut, tokio::io::Error>>> Stream for Enc
                 this.input_buffer.append(&mut needed_for_block.to_le_bytes().to_vec());
                 this.output_buffer.clear();
                 while this.input_buffer.len() >= BLOCK_SIZE {
+                    // Same check as above
+                    if *this.nonce > *this.nonce_final {
+                        return Poll::Ready(Some(Err(tokio::io::Error::new(
+                            ErrorKind::Other,
+                            EncryptError {
+                                message: "Incorrect number of nonces used (too many)"
+                            },
+                        ))));
+                    }
                     match this.aead.encrypt(&nonce_from_u128(*this.nonce), &this.input_buffer[0..BLOCK_SIZE]) {
                         Ok(mut ciphertext) => {
                             *this.nonce += 1;
@@ -120,7 +156,16 @@ impl<S: Stream<Item = Result<bytes::BytesMut, tokio::io::Error>>> Stream for Enc
                 Poll::Ready(Some(Ok(BytesMut::from(&this.output_buffer[..]))))
             }
             EncReadState::Done => {
-                assert_eq!(*this.nonce, *this.nonce_final);
+                // Check we used all the nonces we were supposed to
+                // We checked previously that we didn't use too many, so we should only hit this if we used too few
+                if *this.nonce != *this.nonce_final {
+                    return Poll::Ready(Some(Err(tokio::io::Error::new(
+                        ErrorKind::Other,
+                        EncryptError {
+                            message: "Incorrect number of nonces used (too few)"
+                        },
+                    ))));
+                }
                 Poll::Ready(None)
             }
         }
