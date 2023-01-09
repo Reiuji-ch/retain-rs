@@ -47,6 +47,17 @@ pub async fn serve() {
     let addr = listener.local_addr().unwrap();
     let mut portfile_location = std::env::temp_dir();
     portfile_location.push("retain-rs.port");
+
+    // Check if an instance is already running
+    // This will panic if there is already a server responding on the port stored in retain-rs.port
+    // Not a perfect solution, since 2 processes started at the same time may not see each others port-file
+    match ipc::IPCConnection::connect_to_server().await {
+        Ok(_) => {
+            panic!("An instance of the retain-rs server is already running. Please close all existing instances before starting a new one")
+        }
+        Err(_err) => {},
+    };
+
     std::fs::write(portfile_location, &addr.port().to_string()).expect("Failed to write portfile");
     println!("Running on: {}", addr);
 
