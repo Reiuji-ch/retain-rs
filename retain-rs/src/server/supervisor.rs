@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
+use strmap::StrMapConfig;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::MissedTickBehavior;
 
@@ -138,6 +139,17 @@ pub async fn supervise(
         );
         *known_files.lock().await = files_from_b2;
     }
+
+    // Spawn rebalancer thread
+    // This will rebalance the KnownFiles tree every 10 minutes
+    let known_files_clone = known_files.clone();
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(Duration::from_secs(60 * 10));
+            let mut lock = known_files_clone.blocking_lock();
+            lock.rebalance(&StrMapConfig::InMemory).unwrap();
+        }
+    });
 
     // Keeps track of whiles files are currently uploading, to prevent simultaneous uploads of the same file
     let currently_uploading: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));

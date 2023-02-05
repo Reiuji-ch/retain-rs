@@ -407,6 +407,7 @@ async fn get_file_list_from_b2(
                         &StrMapConfig::InMemory,
                     )
                     .unwrap();
+                pathmap.rebalance(&StrMapConfig::InMemory).unwrap();
 
                 // Check if we're done or what to call with next
                 if filelist.next_file_name.is_none() {
