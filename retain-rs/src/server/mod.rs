@@ -400,8 +400,6 @@ async fn get_file_list_from_b2(
                     })
                     .collect();
                 let paths: Vec<&Path> = list.iter().map(|elem| elem.0.as_path()).collect();
-                eprintln!("Insert {}", paths.len());
-                eprintln!("{:?}", paths);
                 pathmap
                     .insert_many(
                         &paths,
@@ -409,7 +407,6 @@ async fn get_file_list_from_b2(
                         &StrMapConfig::InMemory,
                     )
                     .unwrap();
-                eprintln!("Status {}", pathmap.len());
 
                 // Check if we're done or what to call with next
                 if filelist.next_file_name.is_none() {
