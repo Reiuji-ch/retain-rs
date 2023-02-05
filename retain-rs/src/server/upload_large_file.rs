@@ -44,7 +44,7 @@ pub async fn upload_large_file(
         // The file does not already exist -- Use the new nonce we allocated
         None => name_nonce,
     };
-    let encrypted_filename = match aead.encrypt(&nonce_from_u128(name_nonce), path.to_string_lossy().as_bytes()) {
+    let encrypted_filename = match aead.encrypt(&nonce_from_u128(name_nonce), path.to_string_lossy().replace("\\", "/").as_bytes()) {
         Ok(mut ciphertext) => {
             let mut name = name_nonce.to_le_bytes().to_vec();
             name.append(&mut ciphertext);
@@ -77,7 +77,7 @@ pub async fn upload_large_file(
     let file = match File::open(&path).await {
         Ok(file) => file,
         Err(_err) => {
-            eprintln!("Failed to open (large) file {}", path.to_string_lossy());
+            eprintln!("Failed to open (large) file {}", path.to_string_lossy().replace("\\", "/"));
             currently_uploading.lock().await.retain(|elem| elem != &path);
             return;
         }
@@ -215,14 +215,9 @@ pub async fn finish_large_file(auth: Arc<RwLock<Option<Auth>>>,
         b2_finish_large_file(auth.clone(), file_id.clone(), part_hashes.clone()).await
     }, {
         let mut f = known_files.lock().await;
-        match f.binary_search_by(|(known_path, _timestamp, _name_nonce)| known_path.cmp(&path)) {
-            Ok(idx) => {
-                f[idx].1 = current_timestamp;
-            }
-            Err(idx) => {
-                f.insert(idx, (path.clone(), current_timestamp, name_nonce));
-            }
-        }
+        let _ = f.delete(path.to_string_lossy().replace("\\", "/").as_bytes());
+        let _ = f.insert(path.to_string_lossy().replace("\\", "/").as_bytes(), (current_timestamp, name_nonce));
+
         eprintln!("Successfully uploaded large file: {path:?}");
         currently_uploading.lock().await.retain(|elem| elem != &path);
         return;

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use chacha20poly1305::XChaCha20Poly1305;
@@ -28,9 +30,7 @@ pub async fn hide_unused(config: Arc<RwLock<Config>>, auth: Arc<RwLock<Option<Au
     // Semaphore for limiting max outstanding hide calls
     let concurrent_calls_semaphore = Arc::new(Semaphore::new(8));
 
-    let mut index = {
-        known_files.lock().await.len().max(1) - 1
-    };
+    let mut last_key = b"";
     loop {
         // Sleep a bit to avoid hammering the filesystem
         tokio::time::sleep(Duration::from_millis(2)).await;
@@ -47,13 +47,20 @@ pub async fn hide_unused(config: Arc<RwLock<Config>>, auth: Arc<RwLock<Option<Au
         }
         let file = {
             let mut lock = known_files.lock().await;
-            if lock.len() == 0 {
-                tokio::time::sleep(Duration::from_secs(10)).await;
-                continue;
-            }
+            let (key, (modified, nonce)) = match lock.next(last_key) {
+                Some(data) => data,
+                None => {
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    continue;
+                }
+            };
+            let modified = *modified;
+            let nonce = *nonce;
+            let path = PathBuf::from_str(&String::from_utf8(key.clone()).unwrap()).unwrap();
             let mut should_hide = false;
-            if lock[index].0.exists() {
-                if !rules.should_upload(&lock[index].0) {
+
+            if path.exists() {
+                if !rules.should_upload(&path) {
                     // File exists but is no longer covered by rules, hide it in B2
                     should_hide = true;
                 }
@@ -61,17 +68,17 @@ pub async fn hide_unused(config: Arc<RwLock<Config>>, auth: Arc<RwLock<Option<Au
                 // File doesn't exists on disk anymore, hide it in B2
                 should_hide = true;
             }
-            // Reminder: it's not safe to swap_remove here
-            // It _would_ be fine since we're going high-to-low index, but the list has to remain sorted
-            // otherwise other parts of the code that relies on order to binary search fails
             match should_hide {
-                true => Some(lock.remove(index)),
+                true => {
+                    let _ = lock.delete(&key);
+                    Some((path, modified, nonce))
+                },
                 false => None,
             }
         };
         match file {
             Some(file) => {
-                let encrypted_filename = match aead.encrypt(&nonce_from_u128(file.2), file.0.to_string_lossy().as_bytes()) {
+                let encrypted_filename = match aead.encrypt(&nonce_from_u128(file.2), file.0.to_string_lossy().replace("\\", "/").as_bytes()) {
                     Ok(mut ciphertext) => {
                         let mut name = file.2.to_le_bytes().to_vec();
                         name.append(&mut ciphertext);
@@ -98,26 +105,20 @@ pub async fn hide_unused(config: Arc<RwLock<Config>>, auth: Arc<RwLock<Option<Au
                     // If we ran out of retries, re-add the file to the list of known files
                     // It will eventually be checked and re-tried once we loop back around to it
                     let mut f = known_files.lock().await;
-                    match f.binary_search(&file) {
-                        Ok(_) => {
+                    match f.has_key(file.0.to_string_lossy().replace("\\", "/").as_bytes()) {
+                        true => {
                             // This scenario should be impossible to hit
                             // The file can _technically_ be re-added to known files if it was re-uploaded while the hiding was failing
                             // However, since it's re-uploaded it should receive a new encrypted name and thus match the binary search
                             panic!("File exists in known files when it shouldn't")
                         }
-                        Err(err) => {
-                            f.insert(err, file);
+                        false => {
+                            f.insert(file.0.to_string_lossy().replace("\\", "/").as_bytes(), (file.1, file.2));
                         }
                     }
                 });
             },
             None => (),
-        };
-        index = match index {
-            0 => {
-                known_files.lock().await.len().max(1) - 1
-            },
-            n => n - 1
         };
     }
 }

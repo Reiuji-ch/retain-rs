@@ -7,12 +7,13 @@ use std::time::Duration;
 use chacha20poly1305::{Key, XChaCha20Poly1305};
 use chacha20poly1305::aead::{Aead, NewAead};
 use glob::Pattern;
+use strmap::{StrMap, StrMapConfig};
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, RwLock};
 
-use backblaze_api::api::list_all_file_names;
-use backblaze_api::Auth;
+use backblaze_api::api::{b2_list_file_names, list_all_file_names};
+use backblaze_api::{ApiError, Auth};
 
 use crate::commands::{Command, ipc, Response};
 use crate::config::Config;
@@ -27,11 +28,12 @@ mod upload_file;
 mod resume_large_file;
 mod cleaner;
 
-// Type that holds files we know are stored in B2 (file_path, modified_timestamp, name_nonce)
-// We need to re-use the same filename to replace files correctly
-// Instead of storing the whole encrypted name, we can just store the nonce
+// Type that holds files we know are stored in B2
+// This maps a Path to a (modified_timestamp, name_nonce) tuple
+// We need to re-use the same encrypted name for the same file to sync correctly
+// Instead of storing the whole encrypted name, we can just store the nonce and re-encrypt the path
 // Timestamp is milliseconds since Unix Epoch
-type KnownFiles = Arc<Mutex<Vec<(PathBuf, u128, u128)>>>;
+type KnownFiles = Arc<Mutex<StrMap<(u128, u128)>>>;
 
 /// Starts the main processing loop
 pub async fn serve() {
@@ -61,7 +63,7 @@ pub async fn serve() {
     std::fs::write(portfile_location, &addr.port().to_string()).expect("Failed to write portfile");
     println!("Running on: {}", addr);
 
-    let known_files: KnownFiles = Arc::new(Mutex::new(Vec::new()));
+    let known_files: KnownFiles = Arc::new(Mutex::new(StrMap::empty()));
     let api_auth: Arc<RwLock<Option<Auth>>> = Arc::new(RwLock::new(None));
     let config: Arc<RwLock<Config>> = Arc::new(RwLock::new(config));
     let _supervisor_handle = tokio::spawn(supervise(api_auth.clone(), config.clone(), known_files.clone()));
@@ -191,6 +193,8 @@ pub async fn serve() {
                             let _ = ipc.send_response(Response::Ok, format!("Set limit to {}/s", format_bytes(amount))).await;
                         }
                         Command::Search => {
+                            todo!("StrMap does not implement len");
+                            /*
                             let files = known_files.lock().await;
                             match files.len() {
                                 0 => {
@@ -201,7 +205,7 @@ pub async fn serve() {
                                         Ok(pattern) => {
                                             let mut matched_paths = Vec::new();
                                             for file in files.deref() {
-                                                let path_string = file.0.to_string_lossy();
+                                                let path_string = file.0.to_string_lossy().replace("\\", "/");
                                                 if pattern.matches(&path_string) {
                                                     matched_paths.push(path_string);
                                                 }
@@ -215,8 +219,11 @@ pub async fn serve() {
                                     }
                                 }
                             }
+                             */
                         }
                         Command::Restore => {
+                            todo!("StrMap does not implement len");
+                            /*
                             let files = known_files.lock().await;
                             if files.len() == 0 {
                                 let _ = ipc.send_response(Response::Err, format!("Cannot search: list of files have not yet been retrieved (or there are 0 files stored). Try again in a moment.")).await;
@@ -262,9 +269,10 @@ pub async fn serve() {
                             }).collect();
 
                             let output = download_queue.into_iter().map(|(path, restore_path, timestamp, nonce)| {
-                                format!("{}\x1f{}\x1f{}\x1f{}", path.to_string_lossy(), restore_path.to_string_lossy(), timestamp, nonce)
+                                format!("{}\x1f{}\x1f{}\x1f{}", path.to_string_lossy().replace("\\", "/"), restore_path.to_string_lossy().replace("\\", "/"), timestamp, nonce)
                             }).collect::<Vec<String>>().join("\x1e");
                             let _ = ipc.send_response(Response::Ok, &output).await;
+                             */
                         }
                     }
                 });
@@ -279,10 +287,15 @@ pub async fn serve() {
 /// Retrieves the list of files stored in B2
 ///
 /// This returns a list of (decrypted path, modified ms, name nonce)
-async fn get_file_list_from_b2(auth: Arc<RwLock<Option<Auth>>>, key: &Key) -> Vec<(PathBuf, u128, u128)> {
-    retry_forever!([5, 60, 300, 600, 3600, 14400], result, {list_all_file_names(auth.clone(), None).await},
-        {
-            let mut list: Vec<(PathBuf, u128, u128)> = result.into_iter().filter_map(|item| {
+async fn get_file_list_from_b2(auth: Arc<RwLock<Option<Auth>>>, key: &Key) -> StrMap<(u128, u128)> {
+    let mut strmap = StrMap::empty();
+    let mut next = None;
+    let backoff = [1, 3, 5, 10, 30, 60, 600, 1800, 3600];
+    let mut attempts = 0;
+    loop {
+        match b2_list_file_names(auth.clone(), next.clone()).await {
+            Ok(filelist) => {
+                let mut list: Vec<(PathBuf, u128, u128)> = filelist.files.into_iter().filter_map(|item| {
                     let nonce = match get_nonce_from_name(&item.file_name) {
                         Some(nonce) => nonce,
                         None => {
@@ -312,30 +325,29 @@ async fn get_file_list_from_b2(auth: Arc<RwLock<Option<Auth>>>, key: &Key) -> Ve
                     };
                     Some((path, modified_time as u128, nonce))
                 }).collect();
-                list.sort_by(|e1, e2| e1.0.cmp(&e2.0));
-                for i in 1..list.len() {
-                    if list[i].0 == list[i-1].0 {
-                        eprintln!("Duplicate files on B2 for path {:?}", list[i].0);
-                        eprintln!("ID {} - Modified: {}", list[i].2, list[i].1);
-                        eprintln!("ID {} - Modified: {}", list[i-1].2, list[i-1].1);
-                        // For now, we'll resolve this by panicking
-                        // It should be impossible to have multiple files on B2 corresponding to the same file on disk
-                        // A file is only uploaded it if does not already exist or it has been modified
-                        // If modified, the file is supposed to retain it's name -- If it doesn't it's a bug and we panic
-                        // So the only way we can get a new B2 file for the same path is the old file was deleted/hidden
-                        // but if it was deleted hidden, there shouldn't be 2 files
-                        // Thus, we should only get here in 2 scenarios, spare bugs from Backblaze:
-                        // 1. There is a bug in the code that caused a duplicate upload
-                        // 2. A hidden file was restored manually
-                        // Neither of those should happen, so, we panic
-                        // A potential alternative would be to discard all files except the one with most recent 'modified_at'
-                        panic!("Unexpected duplicate in B2");
-                    }
+                let keys: Vec<Vec<u8>> = list.iter().map(|elem| elem.0.to_string_lossy().replace("\\", "/").replace("\\", "/").as_bytes().to_vec()).collect();
+                let keys_borrow: Vec<&[u8]> = keys.iter().map(|x| x.as_slice()).collect();
+                strmap.insert_many(
+                    &keys_borrow,
+                    list.iter().map(|elem| (elem.1, elem.2)).collect(),
+                    &StrMapConfig::InMemory).unwrap();
+
+                // Check if we're done or what to call with next
+                if filelist.next_file_name.is_none() {
+                    break;
+                } else {
+                    next = Some(filelist.next_file_name.unwrap());
                 }
-                return list;
-        }, {
-            eprintln!("Failed to get file list from B2: {result:?}")
-        });
+            }
+            Err(err) => {
+                let sleep_for = backoff[attempts];
+                eprintln!("b2_list_file_names failed, will retry in {sleep_for}s ({err:?})");
+                attempts = (attempts+1).max(backoff.len()-1);
+                tokio::time::sleep(Duration::from_secs(sleep_for)).await;
+            }
+        }
+    }
+    strmap
 }
 
 pub fn get_nonce_from_name(encoded_name: &str) -> Option<u128> {
@@ -400,7 +412,7 @@ fn clean_path(path: &Path) -> PathBuf {
         Component::Prefix(component) => {
             // Prefixes only exist on Windows. Grab any potential drive letter and remove illegal characters
             // There _MAY_ be some odd behavior non-drive prefixes, but surely nobody will encounter that
-            let path_string = format!("{}\\", component.as_os_str().to_string_lossy().replace(&[':','\\','/','*','?','"','?','<','>','|'], ""));
+            let path_string = format!("{}\\", component.as_os_str().to_string_lossy().replace("\\", "/").replace(&[':','\\','/','*','?','"','?','<','>','|'], ""));
             let mut buf = PathBuf::from(path_string);
             let remainder = make_relative(path);
             buf.push(&remainder);

@@ -243,7 +243,7 @@ pub fn process_command(cmd: &str, args: &ArgMatches) {
                                 println!("Restore {path:?} -> {target:?}");
                             }
                         }
-                        let encrypted_filename = match aead.encrypt(&nonce_from_u128(name_nonce), path.to_string_lossy().as_bytes()) {
+                        let encrypted_filename = match aead.encrypt(&nonce_from_u128(name_nonce), path.to_string_lossy().replace("\\", "/").as_bytes()) {
                             Ok(mut ciphertext) => {
                                 let mut name = name_nonce.to_le_bytes().to_vec();
                                 name.append(&mut ciphertext);
@@ -254,7 +254,7 @@ pub fn process_command(cmd: &str, args: &ArgMatches) {
                             }
                         };
                         let mut temp_target = target.clone();
-                        temp_target.set_file_name(format!("{}.retain-restore-tmp", temp_target.file_name().unwrap().to_string_lossy()));
+                        temp_target.set_file_name(format!("{}.retain-restore-tmp", temp_target.file_name().unwrap().to_string_lossy().replace("\\", "/")));
                         retry_forever!([1, 3, 5, 10, 30, 60, 600, 1800, 3600], result, {
                             b2_download_file_by_name(auth.clone(), encrypted_filename.clone()).await
                         }, {

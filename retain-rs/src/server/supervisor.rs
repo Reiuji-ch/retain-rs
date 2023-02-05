@@ -118,7 +118,7 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
     eprintln!("Retrieving list of known files");
     {
         let files_from_b2 = get_file_list_from_b2(api_auth.clone(), &encryption_key).await;
-        eprintln!("Got file list from B2 -- There are {} files stored", files_from_b2.len());
+        // TODO: strmap does not implement len eprintln!("Got file list from B2 -- There are {} files stored", files_from_b2.len());
         *known_files.lock().await = files_from_b2;
     }
 
@@ -443,24 +443,22 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
         // Check if it needs to be uploaded
         let (should_upload, existing_name_nonce) = {
             let f = known_files.lock().await;
-            match f.binary_search_by(|(path, _timestamp, _encrypted_name)| path.cmp(&work)) {
-                Ok(idx) => {
-                    let stored_timestamp = f[idx].1;
-                    // If timestamp is changed, we want to upload the new version...
-                    if current_timestamp != stored_timestamp {
+            match f.get(work.to_string_lossy().replace("\\", "/").as_bytes()) {
+                Some((stored_timestamp, nonce)) => {
+                    if current_timestamp != *stored_timestamp {
+                        // Check there isn't an upload in-progress for this file
                         let mut current = currently_uploading.lock().await;
-                        // ...unless it's _already_ being uploaded
                         if current.contains(&work) {
                             (false, None)
                         } else {
                             current.push(work.clone());
-                            (true, Some(f[idx].2))
+                            (true, Some(*nonce))
                         }
                     } else {
                         (false, None)
                     }
-                }
-                Err(_) => {
+                },
+                None => {
                     // If it isn't stored yet, upload it unless we're already uploading it
                     let mut current = currently_uploading.lock().await;
                     if current.contains(&work) {

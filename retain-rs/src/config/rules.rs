@@ -71,21 +71,21 @@ impl RuleManager {
         for include in &self.includes {
             if path.starts_with(include) {
                 potentially_included = true;
-                errors.push(format!("`{}` is already covered by `{}`", path.to_string_lossy(), include));
+                errors.push(format!("`{}` is already covered by `{}`", path.to_string_lossy().replace("\\", "/"), include));
                 break;
             }
         }
         for filter in &self.compiled_filters {
             if filter.matches_path(path) {
                 potentially_included = true;
-                errors.push(format!("`{}` is ignored by a filter: `{}`", path.to_string_lossy(), filter));
+                errors.push(format!("`{}` is ignored by a filter: `{}`", path.to_string_lossy().replace("\\", "/"), filter));
                 break;
             }
         }
         for include in &self.includes {
             if Path::new(include).starts_with(path) {
                 potentially_included = true;
-                errors.push(format!("Including `{}` would result in including `{}` multiple times", path.to_string_lossy(), include));
+                errors.push(format!("Including `{}` would result in including `{}` multiple times", path.to_string_lossy().replace("\\", "/"), include));
                 break;
             }
         }
@@ -93,7 +93,7 @@ impl RuleManager {
         match potentially_included {
             true => Err(errors.join("\n")),
             false => {
-                self.includes.push(path.to_string_lossy().to_string());
+                self.includes.push(path.to_string_lossy().replace("\\", "/").to_string());
                 Ok(())
             }
         }

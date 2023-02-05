@@ -96,7 +96,7 @@ pub async fn enqueue_files(config: Arc<RwLock<Config>>, sender: Sender<std::path
                                 current_iterator = Some(read_dir);
                             }
                             Err(err) => {
-                                eprintln!("Failed to read sub-dir for include {current_include} - {} : {err:?}", s.to_string_lossy());
+                                eprintln!("Failed to read sub-dir for include {current_include} - {} : {err:?}", s.to_string_lossy().replace("\\", "/"));
                                 continue;
                             }
                         }

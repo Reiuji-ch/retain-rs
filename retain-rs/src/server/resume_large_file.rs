@@ -44,7 +44,7 @@ pub async fn resume_large_file(
     let file = match File::open(&path).await {
         Ok(file) => file,
         Err(_err) => {
-            eprintln!("Failed to open (large) file {}", path.to_string_lossy());
+            eprintln!("Failed to open (large) file {}", path.to_string_lossy().replace("\\", "/"));
             currently_uploading.lock().await.retain(|elem| elem != &path);
             return;
         }

@@ -216,7 +216,7 @@ fn get_config_locations() -> Vec<String> {
     if let Some(mut path) = dirs::config_dir() {
         path.push("retain-rs");
         path.push(std::env::var("RETAIN_CONFIG_NAME").unwrap_or_else(|_| "retain.conf".to_string()));
-        let path = path.to_string_lossy().to_string();
+        let path = path.to_string_lossy().replace("\\", "/").to_string();
         possible.push(path);
     }
     // Executable dir
@@ -224,7 +224,7 @@ fn get_config_locations() -> Vec<String> {
         if let Some(path) = exe_path.parent() {
             let mut path = path.to_owned();
             path.push(std::env::var("RETAIN_CONFIG_NAME").unwrap_or_else(|_| "retain.conf".to_string()));
-            let path = path.to_string_lossy().to_string();
+            let path = path.to_string_lossy().replace("\\", "/").to_string();
             possible.push(path);
         }
     }
