@@ -1,14 +1,15 @@
 pub mod rules;
 
+use base64::Engine;
+use chacha20poly1305::Key;
+use rand::RngCore;
 use std::fs::File;
 use std::io::Read;
 use std::io::Write;
 use std::path::Path;
-use chacha20poly1305::Key;
-use rand::RngCore;
 
-use serde::{Deserialize, Serialize};
 use crate::config::rules::RuleManager;
+use serde::{Deserialize, Serialize};
 
 // How many nonces to pre-allocate
 // When the program starts (or runs out) it allocates this many new nonces
@@ -74,15 +75,15 @@ impl Config {
                     // Verify the rules make sense
                     cfg.rules.validate()?;
                     // Load encryption key
-                    let key = base64::decode(&cfg.encryption_keystring).expect("Invalid encryption key");
+                    let key = base64::engine::general_purpose::STANDARD
+                        .decode(&cfg.encryption_keystring)
+                        .expect("Invalid encryption key");
                     let key = Key::clone_from_slice(&key);
                     cfg.encryption_key = Some(key);
                     cfg.available_nonces = 0;
                     Ok(cfg)
-                },
-                Err(err) => {
-                    Err(err.to_string())
                 }
+                Err(err) => Err(err.to_string()),
             }
         } else {
             // Try to write the config to the first location we can
@@ -99,7 +100,10 @@ impl Config {
             }
 
             // Handle error case where we cannot write the config to any of the directories use
-            Err(format!("Failed to write config file: could not write to any of the candidate paths: {:?}", get_config_locations()))
+            Err(format!(
+                "Failed to write config file: could not write to any of the candidate paths: {:?}",
+                get_config_locations()
+            ))
         }
     }
 
@@ -116,10 +120,14 @@ impl Config {
     }
 
     /// Sets the maximum bandwidth usage, in bytes/second
-    pub fn set_bandwidth(&mut self, bandwidth: u64) { self.bandwidth = bandwidth; }
+    pub fn set_bandwidth(&mut self, bandwidth: u64) {
+        self.bandwidth = bandwidth;
+    }
 
     /// Get the maximum bandwidth, in bytes/second
-    pub fn get_bandwidth(&self) -> u64 { self.bandwidth }
+    pub fn get_bandwidth(&self) -> u64 {
+        self.bandwidth
+    }
 
     /// Obtain a copy of the currently in-effect RuleManager
     ///
@@ -164,7 +172,8 @@ impl Config {
     }
 
     pub fn get_encryption_key(&self) -> Key {
-        self.encryption_key.expect("No encryption key, but load() should guarantee it exists..?")
+        self.encryption_key
+            .expect("No encryption key, but load() should guarantee it exists..?")
     }
 
     // Allocates as many nonces as needed and returns the first nonce to use
@@ -172,7 +181,8 @@ impl Config {
         while self.available_nonces < required {
             self.nonce += BUFFERED_NONCES;
             self.available_nonces += BUFFERED_NONCES;
-            self.save().expect("Failed to save config during nonce allocation");
+            self.save()
+                .expect("Failed to save config during nonce allocation");
         }
         self.available_nonces -= required;
         // The current nonce is easily expressed as `nonce - available_nonces`
@@ -208,23 +218,30 @@ fn get_config_locations() -> Vec<String> {
     // Environment-based location
     if let Ok(path) = std::env::var("RETAIN_CONFIG_FILE") {
         possible.push(path.clone());
-        let path = format!("{path}/{}", std::env::var("RETAIN_CONFIG_NAME").unwrap_or_else(|_| "retain.conf".to_string()));
+        let path = format!(
+            "{path}/{}",
+            std::env::var("RETAIN_CONFIG_NAME").unwrap_or_else(|_| "retain.conf".to_string())
+        );
         possible.push(path);
     }
 
     // System config dir
     if let Some(mut path) = dirs::config_dir() {
         path.push("retain-rs");
-        path.push(std::env::var("RETAIN_CONFIG_NAME").unwrap_or_else(|_| "retain.conf".to_string()));
-        let path = path.to_string_lossy().replace("\\", "/").to_string();
+        path.push(
+            std::env::var("RETAIN_CONFIG_NAME").unwrap_or_else(|_| "retain.conf".to_string()),
+        );
+        let path = path.to_string_lossy().to_string();
         possible.push(path);
     }
     // Executable dir
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(path) = exe_path.parent() {
             let mut path = path.to_owned();
-            path.push(std::env::var("RETAIN_CONFIG_NAME").unwrap_or_else(|_| "retain.conf".to_string()));
-            let path = path.to_string_lossy().replace("\\", "/").to_string();
+            path.push(
+                std::env::var("RETAIN_CONFIG_NAME").unwrap_or_else(|_| "retain.conf".to_string()),
+            );
+            let path = path.to_string_lossy().to_string();
             possible.push(path);
         }
     }
@@ -232,13 +249,12 @@ fn get_config_locations() -> Vec<String> {
     possible
 }
 
-
 impl Default for Config {
     fn default() -> Self {
         let mut rng = rand::thread_rng();
         let mut key = [0u8; 32];
         rng.fill_bytes(&mut key);
-        let keystring = base64::encode(&key);
+        let keystring = base64::engine::general_purpose::STANDARD.encode(&key);
         let key = Key::from(key);
         Config {
             path: Default::default(),
@@ -249,7 +265,7 @@ impl Default for Config {
             encryption_keystring: keystring,
             encryption_key: Some(key),
             nonce: 0,
-            available_nonces: 0
+            available_nonces: 0,
         }
     }
 }

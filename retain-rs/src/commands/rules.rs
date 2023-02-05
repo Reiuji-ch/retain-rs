@@ -1,27 +1,25 @@
+use crate::commands::ipc::IPCConnection;
+use crate::commands::{Command, Response};
+use crate::stream::get_encrypted_size;
+use crate::{format_bytes, Config};
+use backblaze_api::api::{b2_authorize_account, list_all_file_names};
+use clap::ArgMatches;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use clap::ArgMatches;
 use tokio::sync::RwLock;
-use backblaze_api::api::{b2_authorize_account, list_all_file_names};
-use crate::commands::{Command, Response};
-use crate::commands::ipc::IPCConnection;
-use crate::{Config, format_bytes};
-use crate::stream::get_encrypted_size;
 
 pub async fn handle(args: &ArgMatches, ipc: &mut IPCConnection, action: Command) -> Result<(), ()> {
     let arg = args.value_of("param").expect("Parameter missing");
     match ipc.send_command(action, arg).await {
-        Ok((response, data)) => {
-            match response {
-                Response::Ok => {
-                    println!("Success: {data}");
-                }
-                Response::Err => {
-                    println!("Failed to apply: {}", data);
-                }
+        Ok((response, data)) => match response {
+            Response::Ok => {
+                println!("Success: {data}");
             }
-        }
-        Err(err) => println!("Communication failure: {:?}", err)
+            Response::Err => {
+                println!("Failed to apply: {}", data);
+            }
+        },
+        Err(err) => println!("Communication failure: {:?}", err),
     }
 
     Ok(())
@@ -86,8 +84,14 @@ pub async fn cost(args: &ArgMatches, mut config: Config) {
 
     let (bytes, files) = usage_by_path(&path, &mut config).await;
 
-    println!("Including this path uses {} of storage, spread across {files} files", format_bytes(bytes));
-    println!("Including this path costs ${:.2} USD/month", bytes_to_cost(bytes));
+    println!(
+        "Including this path uses {} of storage, spread across {files} files",
+        format_bytes(bytes)
+    );
+    println!(
+        "Including this path costs ${:.2} USD/month",
+        bytes_to_cost(bytes)
+    );
 }
 
 /// Computes how much it costs per month to store the given number of bytes
@@ -107,7 +111,8 @@ async fn usage_by_path<P: AsRef<Path>>(path: P, config: &mut Config) -> (u64, u6
         if path.is_file() {
             if rules.should_upload(&path) {
                 total_included_files += 1;
-                total_included_bytes += get_encrypted_size(path.metadata().expect("Failed to stat file").len());
+                total_included_bytes +=
+                    get_encrypted_size(path.metadata().expect("Failed to stat file").len());
             }
             continue;
         }
@@ -120,7 +125,9 @@ async fn usage_by_path<P: AsRef<Path>>(path: P, config: &mut Config) -> (u64, u6
                         }
                     } else if rules.should_upload(&entry.path()) {
                         total_included_files += 1;
-                        total_included_bytes += get_encrypted_size(entry.metadata().expect("Failed to stat file").len());
+                        total_included_bytes += get_encrypted_size(
+                            entry.metadata().expect("Failed to stat file").len(),
+                        );
                     }
                 }
                 Err(err) => {
@@ -138,9 +145,7 @@ pub async fn stats(mut config: Config) {
     if !key.is_empty() {
         backblaze_api::init();
         let auth = match b2_authorize_account(&key).await {
-            Ok(auth) => {
-                auth
-            }
+            Ok(auth) => auth,
             Err(err) => {
                 eprintln!("Failed to authorize: {err:?}");
                 return;
@@ -151,7 +156,11 @@ pub async fn stats(mut config: Config) {
             .await
             .expect("Failed to list all files");
         let bytes_in_b2 = files.iter().fold(0, |acc, elem| acc + elem.content_length);
-        println!("Current actual usage: {}, across {} files", format_bytes(bytes_in_b2), files.len());
+        println!(
+            "Current actual usage: {}, across {} files",
+            format_bytes(bytes_in_b2),
+            files.len()
+        );
         let cost_estimate = 0.005 * (bytes_in_b2 as f64) / 1_000_000_000. * 1.25;
         println!("Current actual cost: ${:.2} USD/month", cost_estimate);
     } else {
@@ -170,7 +179,10 @@ pub async fn stats(mut config: Config) {
     // The exact usage depends primarily on 2 factors:
     // 1. Data that hasn't been uploaded yet (Causes estimate to be higher than actual)
     // 2. "Hidden" files that haven't been deleted yet (Causes estimate to be lower than actual)
-    println!("Estimated total usage: {} across {total_files} files", format_bytes(total_bytes));
+    println!(
+        "Estimated total usage: {} across {total_files} files",
+        format_bytes(total_bytes)
+    );
     // $0.005/GB/Month + 25% VAT
     let cost_estimate = 0.005 * (total_bytes as f64) / 1_000_000_000. * 1.25;
     println!("Estimated total cost: ${:.2} USD/month", cost_estimate);

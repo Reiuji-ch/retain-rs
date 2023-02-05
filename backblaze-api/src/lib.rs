@@ -1,12 +1,12 @@
 pub mod api;
 
+use once_cell::sync::OnceCell;
+use reqwest::{Client, StatusCode};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::time::Duration;
-use once_cell::sync::OnceCell;
-use serde::{Deserialize, Serialize};
-use reqwest::{Client, StatusCode};
-use serde::de::DeserializeOwned;
 use tokio::sync::RwLock;
 
 pub use reqwest::Error as ReqwestError;
@@ -27,7 +27,7 @@ pub fn init() {
     // Concurrency and large file threshold is automatically set s.t. uploads
     // should finish after ~10 minutes, regardless of size
     let up_client = reqwest::ClientBuilder::new()
-            .timeout(Duration::from_secs(1200))
+        .timeout(Duration::from_secs(1200))
         .user_agent(format!("retain-rs {}", env!("CARGO_PKG_VERSION")))
         .tcp_nodelay(true)
         .https_only(true)
@@ -117,9 +117,15 @@ impl Auth {
 /// This takes in an authorization, the data to send, the endpoint to call and what type to return
 /// The input must either be None or a struct implementing Serialize
 /// The output must be a type implementing DeserializeOwned
-pub async fn make_api_call<DATA, IN: Serialize, OUT: DeserializeOwned, F>
-    (auth: Arc<RwLock<Option<Auth>>>, data: Option<DATA>, transformer: F, endpoint: &str) -> Result<OUT, ApiError>
-where F: FnOnce(&Auth, DATA) -> IN {
+pub async fn make_api_call<DATA, IN: Serialize, OUT: DeserializeOwned, F>(
+    auth: Arc<RwLock<Option<Auth>>>,
+    data: Option<DATA>,
+    transformer: F,
+    endpoint: &str,
+) -> Result<OUT, ApiError>
+where
+    F: FnOnce(&Auth, DATA) -> IN,
+{
     let client = CLIENT.get().ok_or(ApiError::FailedToGetClient)?;
 
     // Wait until we have a valid auth, then build the request
@@ -137,7 +143,8 @@ where F: FnOnce(&Auth, DATA) -> IN {
             }
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
-        let mut request = client.post(authorization.get_api_url(endpoint))
+        let mut request = client
+            .post(authorization.get_api_url(endpoint))
             .header("Authorization", authorization.authorization_token.clone());
 
         if data.is_some() {
@@ -158,25 +165,29 @@ where F: FnOnce(&Auth, DATA) -> IN {
                     auth.write().await.take();
                     Err(ApiError::Unauthorized)
                 } else {
-                    Err(ApiError::RequestFailed(format!("{} (HTTP {})", error.code, status.as_str())))
-                }
-            },
-            Err(_) => {
-                match text.len() {
-                    0 => {
-                        Err(ApiError::RequestFailed(format!("HTTP {} - {}",
-                                                            status.as_str(),
-                                                            status.canonical_reason().unwrap_or("Unknown status"))))
-                    }
-                    _ => {
-                        let text = text.replace('\n', "");
-                        Err(ApiError::RequestFailed(format!("HTTP {} - {}: {text}",
-                                                            status.as_str(),
-                                                            status.canonical_reason().unwrap_or("Unknown status"))))
-                    }
+                    Err(ApiError::RequestFailed(format!(
+                        "{} (HTTP {})",
+                        error.code,
+                        status.as_str()
+                    )))
                 }
             }
-        }
+            Err(_) => match text.len() {
+                0 => Err(ApiError::RequestFailed(format!(
+                    "HTTP {} - {}",
+                    status.as_str(),
+                    status.canonical_reason().unwrap_or("Unknown status")
+                ))),
+                _ => {
+                    let text = text.replace('\n', "");
+                    Err(ApiError::RequestFailed(format!(
+                        "HTTP {} - {}: {text}",
+                        status.as_str(),
+                        status.canonical_reason().unwrap_or("Unknown status")
+                    )))
+                }
+            },
+        };
     }
 
     Ok(serde_json::from_str::<OUT>(&text)?)

@@ -1,13 +1,13 @@
+use bytes::Bytes;
+use futures_core::{ready, Stream};
+use pin_project::pin_project;
+use sha1::Digest;
 use std::borrow::BorrowMut;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use bytes::Bytes;
-use futures_core::{ready, Stream};
-use sha1::Digest;
-use pin_project::pin_project;
 
 #[pin_project]
-pub struct HashingStream<S: Stream>  {
+pub struct HashingStream<S: Stream> {
     #[pin]
     inner: S,
     hasher: sha1::Sha1,
@@ -29,16 +29,15 @@ impl<S: Stream<Item = Result<bytes::BytesMut, tokio::io::Error>>> Stream for Has
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.project();
-        let res: Option<Result<bytes::BytesMut, tokio::io::Error>> = ready!(this.inner.poll_next(cx));
+        let res: Option<Result<bytes::BytesMut, tokio::io::Error>> =
+            ready!(this.inner.poll_next(cx));
 
         match res {
             Some(Ok(ref bytes)) => {
                 this.hasher.borrow_mut().update(bytes);
                 Poll::Ready(res)
-            },
-            Some(Err(_)) => {
-                Poll::Ready(res)
             }
+            Some(Err(_)) => Poll::Ready(res),
             None => {
                 match this.done {
                     false => {
@@ -48,7 +47,7 @@ impl<S: Stream<Item = Result<bytes::BytesMut, tokio::io::Error>>> Stream for Has
                         let hash_hex = format!("{:02X}", hash_bytes);
                         *this.done = true;
                         Poll::Ready(Some(Ok(bytes::BytesMut::from(hash_hex.as_bytes()))))
-                    },
+                    }
                     true => {
                         // If the inner stream finished and we already sent the hash, return None
                         Poll::Ready(None)

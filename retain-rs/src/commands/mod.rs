@@ -1,16 +1,17 @@
+use crate::stream::nonce_from_u128;
+use crate::{retry_forever, Config};
+use backblaze_api::api::{b2_authorize_account, b2_download_file_by_name};
+use base64::Engine;
+use chacha20poly1305::aead::Aead;
+use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
+use clap::ArgMatches;
+use futures_util::StreamExt;
 use std::fmt::{Display, Formatter};
 use std::ops::Add;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::UNIX_EPOCH;
-use chacha20poly1305::XChaCha20Poly1305;
-use chacha20poly1305::aead::{Aead, NewAead};
-use clap::ArgMatches;
 use tokio::io::AsyncWriteExt;
-use futures_util::StreamExt;
-use backblaze_api::api::{b2_authorize_account, b2_download_file_by_name};
-use crate::{Config, retry_forever};
-use crate::stream::nonce_from_u128;
 
 pub mod auth;
 pub mod ipc;
@@ -37,7 +38,7 @@ pub enum Command {
     /// Search the backed up files (only completed uploads) using a glob pattern
     Search,
     /// Restore everything matching a glob pattern to a target path
-    Restore
+    Restore,
 }
 
 /// A response to a `Command`
@@ -247,14 +248,14 @@ pub fn process_command(cmd: &str, args: &ArgMatches) {
                             Ok(mut ciphertext) => {
                                 let mut name = name_nonce.to_le_bytes().to_vec();
                                 name.append(&mut ciphertext);
-                                base64::encode_config(name, base64::URL_SAFE)
+                                base64::engine::general_purpose::URL_SAFE.encode(name)
                             }
                             Err(err) => {
                                 panic!("Encryption failed: {err:?}");
                             }
                         };
                         let mut temp_target = target.clone();
-                        temp_target.set_file_name(format!("{}.retain-restore-tmp", temp_target.file_name().unwrap().to_string_lossy().replace("\\", "/")));
+                        temp_target.set_file_name(format!("{}.retain-restore-tmp", temp_target.file_name().unwrap().to_string_lossy()));
                         retry_forever!([1, 3, 5, 10, 30, 60, 600, 1800, 3600], result, {
                             b2_download_file_by_name(auth.clone(), encrypted_filename.clone()).await
                         }, {

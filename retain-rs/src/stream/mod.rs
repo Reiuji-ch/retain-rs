@@ -1,9 +1,9 @@
 use chacha20poly1305::XNonce;
 
-pub mod hash;
-pub mod encrypt;
-pub mod throttle;
 pub mod decrypt;
+pub mod encrypt;
+pub mod hash;
+pub mod throttle;
 
 // Size of each block in the stream
 pub const BLOCK_SIZE: usize = 8192;
@@ -19,12 +19,12 @@ pub fn nonce_from_u128(number: u128) -> XNonce {
 
 // Returns exactly how many nonces are required to encrypt a stream of the given size
 pub fn get_nonces_required(length: u64) -> u128 {
-    ((length+3)/(BLOCK_SIZE as u64)+1) as u128
+    ((length + 3) / (BLOCK_SIZE as u64) + 1) as u128
 }
 
 // Compute how many bytes a file will be after it is encrypted
 pub fn get_encrypted_size(unencrypted_size: u64) -> u64 {
     let nonces_used = get_nonces_required(unencrypted_size) as u64;
     // Overhead: 16 byte initial nonce + 16 byte MAC per BLOCK_SIZE bytes
-    16 + (16+BLOCK_SIZE as u64) * nonces_used
+    16 + (16 + BLOCK_SIZE as u64) * nonces_used
 }
