@@ -14,6 +14,8 @@ pub use reqwest::Error as ReqwestError;
 static CLIENT: OnceCell<Client> = OnceCell::new();
 // Separate client for uploads with NODELAY and long timeout
 static UPLOAD_CLIENT: OnceCell<Client> = OnceCell::new();
+// Separate client for downloads with very long timeout
+static DOWNLOAD_CLIENT: OnceCell<Client> = OnceCell::new();
 
 /// Initialize global resources
 pub fn init() {
@@ -33,8 +35,16 @@ pub fn init() {
         .https_only(true)
         .build()
         .unwrap();
+    // 30 minutes timeout
+    let down_client = reqwest::ClientBuilder::new()
+        .timeout(Duration::from_secs(1800))
+        .user_agent(format!("retain-rs {}", env!("CARGO_PKG_VERSION")))
+        .https_only(true)
+        .build()
+        .unwrap();
     CLIENT.set(client).unwrap();
     UPLOAD_CLIENT.set(up_client).unwrap();
+    DOWNLOAD_CLIENT.set(down_client).unwrap();
 }
 
 /// An error message, returned by the B2 API on failed requests
