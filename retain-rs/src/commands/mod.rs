@@ -256,6 +256,9 @@ pub fn process_command(cmd: &str, args: &ArgMatches) {
                         };
                         let mut temp_target = target.clone();
                         temp_target.set_file_name(format!("{}.retain-restore-tmp", temp_target.file_name().unwrap().to_string_lossy()));
+
+                        // We may want to implement some retry logic for large files in case of interruptions
+                        // That is, instead of retrying the whole part, make checkpoints every n megabytes
                         retry_forever!([1, 3, 5, 10, 30, 60, 600, 1800, 3600], result, {
                             b2_download_file_by_name(auth.clone(), encrypted_filename.clone()).await
                         }, {
@@ -269,18 +272,20 @@ pub fn process_command(cmd: &str, args: &ArgMatches) {
                                 }
                             };
 
+                            // TODO: Improve error handling here
+                            // We do not currently stop the loop properly and may leave broken files
                             while let Some(item) = stream.next().await {
                                 match item {
                                     Ok(bytes) => file.write_all(&bytes).await.expect("Write failed"),
                                     Err(err) => {
                                         eprintln!("Stream error, aborting restore of {path:?} - {err:?}");
-                                        match tokio::fs::remove_file(&path).await {
+                                        match tokio::fs::remove_file(&temp_target).await {
                                             Ok(_) => (),
                                             Err(err) => {
-                                                eprintln!("Failed to remove potentially broken file during restore of {path:?} - {err:?}");
+                                                eprintln!("Failed to remove potentially broken file during restore of {temp_target:?} - {err:?}");
                                             }
                                         }
-                                        break;
+                                        todo!("Improve this");
                                     },
                                 };
                             }

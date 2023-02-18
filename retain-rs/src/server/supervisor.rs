@@ -143,12 +143,10 @@ pub async fn supervise(
     // Spawn rebalancer thread
     // This will rebalance the KnownFiles tree every 10 minutes
     let known_files_clone = known_files.clone();
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_secs(60 * 10));
-            let mut lock = known_files_clone.blocking_lock();
-            lock.rebalance(&StrMapConfig::InMemory).unwrap();
-        }
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(60 * 10));
+        let mut lock = known_files_clone.blocking_lock();
+        lock.rebalance(&StrMapConfig::InMemory).unwrap();
     });
 
     // Keeps track of whiles files are currently uploading, to prevent simultaneous uploads of the same file
@@ -319,7 +317,7 @@ pub async fn supervise(
             continue;
         }
 
-        let parts_list;
+        let mut parts_list;
         retry_forever!(
             [1, 3, 5, 10, 30, 60, 600, 1800, 3600],
             result,
@@ -347,15 +345,6 @@ pub async fn supervise(
             .expect("Unexpected AcquireError from upload-concurrency-semaphore");
 
         eprintln!("Resuming large file at {path:?}");
-        let max_part_number = parts_list
-            .parts
-            .iter()
-            .fold(0, |acc, part| acc.max(part.part_number));
-        let cumulative_parts_size = parts_list
-            .parts
-            .iter()
-            .fold(0, |acc, part| acc + part.content_length);
-        eprintln!("Resuming from part {max_part_number} ({cumulative_parts_size} bytes)");
         let auth_clone = api_auth.clone();
         let known_files_clone = known_files.clone();
         let currently_uploading_clone = currently_uploading.clone();
@@ -380,11 +369,17 @@ pub async fn supervise(
                 continue;
             }
         };
+        // Ensure parts are in order
+        parts_list.parts.sort_by_key(|elem| elem.part_number);
         let part_hashes: Vec<String> = parts_list
             .parts
             .into_iter()
             .map(|part| part.content_sha1)
             .collect();
+        eprintln!(
+            "Resuming large file at {path:?} from part {}",
+            part_hashes.len() + 1
+        );
 
         {
             currently_uploading.lock().await.push(path.clone());
@@ -393,7 +388,7 @@ pub async fn supervise(
             auth_clone,
             path,
             file.file_id.clone(),
-            name_nonce,
+            metadata,
             large_file_threshold,
             current_timestamp,
             known_files_clone,
@@ -402,10 +397,9 @@ pub async fn supervise(
             bandwidth_semaphore_clone,
             start_nonce,
             required_nonces,
-            permit,
             part_hashes,
-            cumulative_parts_size,
-            max_part_number + 1,
+            name_nonce,
+            permit,
         ));
     }
 

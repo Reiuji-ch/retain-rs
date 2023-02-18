@@ -5,7 +5,9 @@ pub async fn b2_download_file_by_name<T: AsRef<str>>(
     auth: Auth,
     name: T,
 ) -> Result<Response, ApiError> {
-    let client = crate::DOWNLOAD_CLIENT.get().ok_or(ApiError::FailedToGetClient)?;
+    let client = crate::DOWNLOAD_CLIENT
+        .get()
+        .ok_or(ApiError::FailedToGetClient)?;
     let endpoint = format!(
         "{}/file/{}/{}",
         auth.download_url,

@@ -133,6 +133,7 @@ impl<S: Stream<Item = Result<bytes::Bytes, ReqwestError>>> Stream for Decrypting
                                     this.output_buffer.append(&mut ciphertext);
                                 }
                                 Err(err) => {
+                                    // TODO: Handle error better, we need to clean up the <name>.retain-restore-tmp file at least...
                                     panic!("Decryption failed: {err:?}");
                                 }
                             }

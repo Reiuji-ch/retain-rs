@@ -3,6 +3,7 @@ use chacha20poly1305::XNonce;
 pub mod decrypt;
 pub mod encrypt;
 pub mod hash;
+pub mod sized;
 pub mod throttle;
 
 // Size of each block in the stream

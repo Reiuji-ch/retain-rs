@@ -44,7 +44,7 @@ pub async fn upload_file(
         }
     };
     let stream = FramedRead::new(file, BytesCodec::new());
-    let stream = EncryptingStream::wrap(stream, &key, start_nonce, allocated_nonces);
+    let stream = EncryptingStream::wrap(stream, &key, start_nonce, allocated_nonces, false);
     let stream = HashingStream::wrap(stream);
     let stream = ThrottlingStream::wrap(stream, bandwidth_semaphore);
 

@@ -1,22 +1,28 @@
-use crate::retry_forever;
+use std::fs::Metadata;
+use std::io::SeekFrom;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, UNIX_EPOCH};
+
+use chacha20poly1305::Key;
+use tokio::fs::File;
+use tokio::io::AsyncSeekExt;
+use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
+use tokio_util::codec::{BytesCodec, FramedRead};
+
+use backblaze_api::api::{b2_upload_part, PartInfo};
+use backblaze_api::{ApiError, Auth};
+
+use crate::retry_limited;
 use crate::server::upload_large_file::{
     cancel_large_file, finish_large_file, get_upload_part_auth,
 };
 use crate::server::KnownFiles;
 use crate::stream::encrypt::EncryptingStream;
 use crate::stream::hash::HashingStream;
+use crate::stream::sized::SizedStream;
 use crate::stream::throttle::ThrottlingStream;
-use backblaze_api::api::{b2_upload_part, PartInfo};
-use backblaze_api::Auth;
-use chacha20poly1305::Key;
-use futures_util::stream::StreamExt;
-use std::io::Cursor;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::UNIX_EPOCH;
-use tokio::fs::File;
-use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
-use tokio_util::codec::{BytesCodec, FramedRead};
+use crate::stream::{get_encrypted_size, get_nonces_required, BLOCK_SIZE};
 
 // Resumes a previously started large file
 // This will resume by processing the file again, skipping the first 'offset_bytes' of the stream
@@ -24,7 +30,7 @@ pub async fn resume_large_file(
     auth: Arc<RwLock<Option<Auth>>>,
     path: PathBuf,
     file_id: String,
-    name_nonce: u128,
+    metadata: Metadata,
     part_size: u64,
     current_timestamp: u128,
     known_files: KnownFiles,
@@ -32,70 +38,34 @@ pub async fn resume_large_file(
     key: Key,
     bandwidth_semaphore: Arc<Semaphore>,
     start_nonce: u128,
-    allocated_nonces: u128,
-    permit: OwnedSemaphorePermit,
+    mut allocated_nonces: u128,
     mut part_hashes: Vec<String>,
-    offset_bytes: u64,
-    next_part: u16,
+    name_nonce: u128,
+    permit: OwnedSemaphorePermit,
 ) {
+    let total_size = metadata.len();
     // * Call b2_get_upload_part_url (fileid) -> upload url, auth token
-    let upauth = get_upload_part_auth(auth.clone(), file_id.clone()).await;
+    let mut upauth = get_upload_part_auth(auth.clone(), file_id.clone()).await;
 
     // * Call b2_upload_part (Call until done. Call b2_get_upload_part_url if needed)
-    // Open file and wrap it in the various stream processors
-    let file = match File::open(&path).await {
-        Ok(file) => file,
-        Err(_err) => {
-            eprintln!("Failed to open (large) file {}", path.to_string_lossy());
-            currently_uploading
-                .lock()
-                .await
-                .retain(|elem| elem != &path);
-            return;
-        }
+    // Align part size to BLOCK_SIZE for predictable encryption
+    // Add an extra block to ensure we don't round down below absolute_minimum_part_size
+    let part_size = ((part_size / BLOCK_SIZE as u64) + 1) * BLOCK_SIZE as u64;
+    let parts_required = match total_size % part_size {
+        0 => total_size / part_size,
+        _ => (total_size / part_size) + 1,
     };
-    let stream = FramedRead::new(file, BytesCodec::new());
-    let mut stream = EncryptingStream::wrap(stream, &key, start_nonce, allocated_nonces);
-
-    let mut buffer = Vec::with_capacity(part_size as usize);
-    let mut part_number = next_part;
-    let mut discarded_bytes = 0;
-    loop {
-        // Read bytes from the stream until we have enough for a part
-        while let Some(bytes) = stream.next().await {
-            match bytes {
-                Ok(bytes) => {
-                    buffer.append(&mut bytes.to_vec());
-                }
-                Err(err) => {
-                    // Fatal error, something went wrong _somewhere_ in the stream
-                    eprintln!("Error getting bytes from stream: {err:?}");
-                    cancel_large_file(auth.clone(), file_id.clone()).await;
-                    currently_uploading
-                        .lock()
-                        .await
-                        .retain(|elem| elem != &path);
-                    return;
-                }
-            }
-            if discarded_bytes < offset_bytes {
-                let amount_to_drain = ((offset_bytes - discarded_bytes) as usize).min(buffer.len());
-                let drain = buffer.drain(..amount_to_drain);
-                let discarded = drain.len() as u64;
-                let _: Vec<_> = drain.collect();
-                discarded_bytes += discarded;
-            }
-            // Read at least one full part (+1 byte)
-            if buffer.len() > part_size as usize {
-                break;
-            }
-        }
+    let mut continue_with_nonce =
+        start_nonce + get_nonces_required(part_size * part_hashes.len() as u64) - 1;
+    allocated_nonces -= continue_with_nonce - start_nonce;
+    let first_part = (part_hashes.len() + 1) as u64;
+    for part_number in first_part..(parts_required + 1) {
         // Determine the actual part size. This will typically be smaller than part_size for the last part
-        let this_part_size = part_size.min(buffer.len() as u64);
+        let this_part_size = (total_size - (part_number - 1) * part_size).min(part_size);
         // Upload part
-        // Note that we can retry this, since we buffer the whole part in memory
-        // That is, we can just reset _this_ part of the stream
-        retry_forever!(
+        // Take a copy of the encryption state, in case we need to retry this part
+        let mut successfully_uploaded;
+        retry_limited!(
             [1, 3, 5, 10, 30, 60, 600, 1800, 3600],
             result,
             {
@@ -128,38 +98,102 @@ pub async fn resume_large_file(
                         return;
                     }
                 }
-                let part_buffer = buffer[..this_part_size as usize].to_vec();
-                let upload_stream = FramedRead::new(Cursor::new(part_buffer), BytesCodec::new());
-                let upload_stream = HashingStream::wrap(upload_stream);
-                let upload_stream =
-                    ThrottlingStream::wrap(upload_stream, bandwidth_semaphore.clone());
+
+                // Open file and wrap it in the various stream processors
+                let mut file = match File::open(&path).await {
+                    Ok(file) => file,
+                    Err(_err) => {
+                        eprintln!("Failed to open (large) file {}", path.to_string_lossy());
+                        currently_uploading
+                            .lock()
+                            .await
+                            .retain(|elem| elem != &path);
+                        return;
+                    }
+                };
+
+                // Determine size of uploaded part
+                // Only count the 16 bytes used for initial nonce on the first part
+                // get_encrypted_size includes a padding block, only count it for the LAST part
+                // Note that the padding block is an ENCRYPTED block, and thus has +16 bytes MAC
+                let actual_part_size = if part_number == 1 {
+                    // We should never resume a large file from without the first part already uploaded...
+                    unreachable!("Cannot resume large file without first part uploaded")
+                } else if part_number == parts_required {
+                    get_encrypted_size(this_part_size) - 16
+                } else {
+                    get_encrypted_size(this_part_size) - 16 - (BLOCK_SIZE + 16) as u64
+                };
+
+                // Reset the stream. Seek to where the part starts
+                // This ensures we read from the correct part
+                match file
+                    .seek(SeekFrom::Start((part_number - 1) * part_size))
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(err) => {
+                        eprintln!("Error seeking in (large) file {path:?} {err:?}");
+                        cancel_large_file(auth.clone(), file_id.clone()).await;
+                        currently_uploading
+                            .lock()
+                            .await
+                            .retain(|elem| elem != &path);
+                        return;
+                    }
+                }
+                let file_stream = FramedRead::new(file, BytesCodec::new());
+                let encrypt_stream = EncryptingStream::wrap(
+                    file_stream,
+                    &key,
+                    continue_with_nonce,
+                    allocated_nonces,
+                    true,
+                );
+                let limit_stream = SizedStream::wrap(encrypt_stream, actual_part_size as usize);
+                let hash_stream = HashingStream::wrap(limit_stream);
+                let throttle_stream =
+                    ThrottlingStream::wrap(hash_stream, bandwidth_semaphore.clone());
+
                 b2_upload_part(
                     &upauth,
-                    upload_stream,
+                    throttle_stream,
                     PartInfo {
-                        part_number,
-                        part_size: this_part_size + 40, // +40 for hex_digits_at_end
+                        part_number: part_number as u16,
+                        part_size: actual_part_size + 40, // +40 for hex_digits_at_end
                     },
                 )
                 .await
             },
             {
                 part_hashes.push(result.content_sha1);
+                // Compute required nonces for this part
+                // We have already have allocated this many, so we don't update the counter
+                // but if we need to retry, we need to track from which nonce to resume
+                // Note we subtract one, since get_nonces_required returns the number with padding
+                // Since we only pad the last part, the nonce for the pad block is not used here
+                continue_with_nonce += get_nonces_required(this_part_size) - 1;
+                allocated_nonces -= get_nonces_required(this_part_size) - 1;
+                successfully_uploaded = true;
                 break;
             },
             {
-                eprintln!("Unexpected error while uploading part: {result:?}");
+                eprintln!("Error while uploading part: {result:?}");
+                if let ApiError::Unauthorized = result {
+                    upauth = get_upload_part_auth(auth.clone(), file_id.clone()).await;
+                }
+                successfully_uploaded = false;
             }
         );
-        // The buffer normally holds _at least_ part_size+1 bytes
-        // If it holds part_size or less, it means the stream is done
-        if buffer.len() <= part_size as usize {
-            break;
+        if !successfully_uploaded {
+            eprintln!("Ran out of retries trying to upload part {part_number} of {path:?}");
+            cancel_large_file(auth.clone(), file_id.clone()).await;
+            currently_uploading
+                .lock()
+                .await
+                .retain(|elem| elem != &path);
+            return;
         }
-        // Remove the data we just uploaded from the buffer
-        let _: Vec<_> = buffer.drain(..this_part_size as usize).collect();
-        // Next part
-        part_number += 1;
     }
 
     // * Call b2_finish_large_file

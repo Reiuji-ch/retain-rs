@@ -56,11 +56,23 @@ impl Display for EncryptError {
 impl Error for EncryptError {}
 
 impl<S: Stream> EncryptingStream<S> {
-    pub fn wrap(stream: S, key: &Key, start_nonce: u128, allocated_nonce: u128) -> Self {
+    pub fn wrap(
+        stream: S,
+        key: &Key,
+        start_nonce: u128,
+        allocated_nonce: u128,
+        skip_nonce: bool,
+    ) -> Self {
+        // Optionally skip nonce
+        // This is used for large files, where only the first part needs a nonce
+        let state = match skip_nonce {
+            true => EncReadState::Data,
+            false => EncReadState::Nonce,
+        };
         EncryptingStream {
             inner: stream,
             aead: XChaCha20Poly1305::new(key),
-            state: EncReadState::Nonce,
+            state,
             nonce: start_nonce,
             nonce_final: start_nonce + allocated_nonce,
             input_buffer: Vec::with_capacity(BLOCK_SIZE),
@@ -168,7 +180,8 @@ impl<S: Stream<Item = Result<bytes::BytesMut, tokio::io::Error>>> Stream for Enc
                     return Poll::Ready(Some(Err(tokio::io::Error::new(
                         ErrorKind::Other,
                         EncryptError {
-                            message: "Incorrect number of nonces used (too few)",
+                            message:
+                                "Incorrect number of nonces used during finalize, likely too few",
                         },
                     ))));
                 }

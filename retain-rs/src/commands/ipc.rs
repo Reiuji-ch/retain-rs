@@ -90,7 +90,8 @@ impl IPCConnection {
         {
             Ok(_) => match self.receive_response(Duration::from_secs(5)).await {
                 Ok(resp) => Ok(resp),
-                Err(_err) => {
+                Err(err) => {
+                    eprintln!("Something went wrong, retrying ({err})");
                     self.reconnect().await?;
                     self.raw_send_message(format!("{}|{}", command, &data.as_ref()))
                         .await
