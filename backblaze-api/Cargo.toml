@@ -11,6 +11,6 @@ reqwest = { version = "0.11.14", features = ["json", "stream"] }
 futures-core = "0.3.21"
 serde = { version = "1.0.137", features = ["derive"] }
 serde_json = "1.0.81"
-tokio = { version = "1.24.1", features = ["full"] }
+tokio = { version = "1.24.2", features = ["full"] }
 tokio-util = {version = "0.7.3", features = ["codec"] }
 bytes = "1.1.0"

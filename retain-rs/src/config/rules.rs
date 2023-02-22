@@ -7,9 +7,9 @@
 //! Each item in `include` is an absolute path. Each item in `filters` in a glob-style pattern.
 //! We recursively iterate over items defined by `include`. If any of the glob patterns match one of these items, it is _NOT_ uploaded.
 
-use std::path::Path;
 use glob::Pattern;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone, PartialOrd, PartialEq, Eq)]
 pub struct RuleManager {
@@ -32,10 +32,12 @@ impl RuleManager {
             let pattern = Pattern::new(filter);
             match pattern {
                 Ok(pattern) => self.compiled_filters.push(pattern),
-                Err(_) => return Err(format!("Invalid pattern: {} in rules ", filter))
+                Err(_) => return Err(format!("Invalid pattern: {} in rules ", filter)),
             }
         }
-        self.compiled_filters.push(Pattern::new("*.retain-restore-tmp").expect("Failed to compile internal-use filter"));
+        self.compiled_filters.push(
+            Pattern::new("*.retain-restore-tmp").expect("Failed to compile internal-use filter"),
+        );
         self.filters_validated = true;
 
         Ok(())
@@ -47,7 +49,7 @@ impl RuleManager {
     pub fn add_filter(&mut self, filter: String) -> Result<(), String> {
         for existing_filter in &self.filters {
             if &filter == existing_filter {
-                return Err("An identical filter already exists".to_string())
+                return Err("An identical filter already exists".to_string());
             }
         }
 
@@ -56,8 +58,8 @@ impl RuleManager {
             Ok(pattern) => {
                 self.filters.push(filter);
                 self.compiled_filters.push(pattern);
-            },
-            Err(_) => return Err(format!("Invalid pattern: {} in rules ", filter))
+            }
+            Err(_) => return Err(format!("Invalid pattern: {} in rules ", filter)),
         }
         Ok(())
     }
@@ -71,21 +73,33 @@ impl RuleManager {
         for include in &self.includes {
             if path.starts_with(include) {
                 potentially_included = true;
-                errors.push(format!("`{}` is already covered by `{}`", path.to_string_lossy(), include));
+                errors.push(format!(
+                    "`{}` is already covered by `{}`",
+                    path.to_string_lossy(),
+                    include
+                ));
                 break;
             }
         }
         for filter in &self.compiled_filters {
             if filter.matches_path(path) {
                 potentially_included = true;
-                errors.push(format!("`{}` is ignored by a filter: `{}`", path.to_string_lossy(), filter));
+                errors.push(format!(
+                    "`{}` is ignored by a filter: `{}`",
+                    path.to_string_lossy(),
+                    filter
+                ));
                 break;
             }
         }
         for include in &self.includes {
             if Path::new(include).starts_with(path) {
                 potentially_included = true;
-                errors.push(format!("Including `{}` would result in including `{}` multiple times", path.to_string_lossy(), include));
+                errors.push(format!(
+                    "Including `{}` would result in including `{}` multiple times",
+                    path.to_string_lossy(),
+                    include
+                ));
                 break;
             }
         }
@@ -130,14 +144,12 @@ impl RuleManager {
         for i in (0..self.filters.len()).rev() {
             if self.filters[i] == filter {
                 self.filters.remove(i);
-
             }
         }
         let len_compiled_before = self.compiled_filters.len();
         for i in (0..self.compiled_filters.len()).rev() {
             if self.compiled_filters[i].as_str() == filter {
                 self.compiled_filters.remove(i);
-
             }
         }
         let removed_filters = len_before - self.filters.len();

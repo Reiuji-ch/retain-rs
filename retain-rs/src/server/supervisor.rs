@@ -1,26 +1,32 @@
+use crate::config::Config;
+use crate::server::resume_large_file::resume_large_file;
+use crate::server::upload_file::upload_file;
+use crate::server::upload_large_file::{cancel_large_file, upload_large_file};
+use crate::server::{
+    cleaner, decrypt_file_name, enqueuer, get_file_list_from_b2, get_nonce_from_name, KnownFiles,
+};
+use crate::stream::get_nonces_required;
+use crate::{format_bytes, retry_forever};
+use backblaze_api::api::{b2_authorize_account, b2_list_parts, b2_list_unfinished_large_files};
+use backblaze_api::Auth;
 use std::collections::VecDeque;
 use std::ops::Deref;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
+use strmap::StrMapConfig;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::MissedTickBehavior;
-use backblaze_api::api::{b2_authorize_account, b2_list_parts, b2_list_unfinished_large_files};
-use backblaze_api::Auth;
-use crate::config::Config;
-use crate::{format_bytes, retry_forever};
-use crate::server::{cleaner, decrypt_file_name, enqueuer, get_file_list_from_b2, get_nonce_from_name, KnownFiles};
-use crate::server::resume_large_file::resume_large_file;
-use crate::server::upload_file::upload_file;
-use crate::server::upload_large_file::{cancel_large_file, upload_large_file};
-use crate::stream::get_nonces_required;
 
 const ABSOLUTE_MAX_CONCURRENT_UPLOADS: u64 = 16;
 const MAXIMUM_ENQUEUED_FILES: usize = 32;
 
-pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<Config>>, known_files: KnownFiles) {
-
+pub async fn supervise(
+    api_auth: Arc<RwLock<Option<Auth>>>,
+    config: Arc<RwLock<Config>>,
+    known_files: KnownFiles,
+) {
     // Spawn the authorization supervisor
     // This tasks tries to ensure we always have Some(Auth) in our api_auth
     // If we have Some(Auth), it will sleep until it becomes None
@@ -34,38 +40,40 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
     // the Option<Auth>, causing this to re-authenticate
     let auth_copy = api_auth.clone();
     let config_copy = config.clone();
-    let encryption_key = {
-        config.read().await.get_encryption_key()
-    };
+    let encryption_key = { config.read().await.get_encryption_key() };
     tokio::spawn(async move {
-        retry_forever!([1, 3, 5, 10, 30, 60, 600, 1800, 3600], result, {
-            let status = { auth_copy.read().await.is_some() };
-            match status {
-                true => {
-                    tokio::time::sleep(Duration::from_secs(10)).await;
-                    continue;
-                }
-                false => {
-                    let key = {
-                        config_copy.read().await.get_key().to_string()
-                    };
-                    if !key.is_empty() {
-                        b2_authorize_account(&key).await
-                    } else {
+        retry_forever!(
+            [1, 3, 5, 10, 30, 60, 600, 1800, 3600],
+            result,
+            {
+                let status = { auth_copy.read().await.is_some() };
+                match status {
+                    true => {
                         tokio::time::sleep(Duration::from_secs(10)).await;
                         continue;
                     }
+                    false => {
+                        let key = { config_copy.read().await.get_key().to_string() };
+                        if !key.is_empty() {
+                            b2_authorize_account(&key).await
+                        } else {
+                            tokio::time::sleep(Duration::from_secs(10)).await;
+                            continue;
+                        }
+                    }
                 }
+            },
+            {
+                auth_copy.write().await.replace(result);
+            },
+            {
+                eprintln!("Failed to authorize: {result:?}");
             }
-        }, {
-            auth_copy.write().await.replace(result);
-        }, {
-            eprintln!("Failed to authorize: {result:?}");
-        });
+        );
     });
 
     // Read max bandwidth and determine maximum concurrent uploads
-    let mut max_bandwidth =  {
+    let mut max_bandwidth = {
         match config.read().await.get_bandwidth() {
             0 => 1_000_000_000,
             n => {
@@ -75,12 +83,14 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
                 } else {
                     n
                 }
-            },
+            }
         }
     };
     eprintln!("Total maximum bandwidth: {}/s", format_bytes(max_bandwidth));
     // Minimum 100KiB/s per additional simultaneous upload
-    let max_concurrency = (max_bandwidth/100000).min(ABSOLUTE_MAX_CONCURRENT_UPLOADS).max(1);
+    let max_concurrency = (max_bandwidth / 100000)
+        .min(ABSOLUTE_MAX_CONCURRENT_UPLOADS)
+        .max(1);
     eprintln!("Setting max concurrent uploads to: {max_concurrency}");
     let mut upload_auths = VecDeque::with_capacity((ABSOLUTE_MAX_CONCURRENT_UPLOADS * 2) as usize);
     let concurrent_uploads_semaphore = Arc::new(Semaphore::new(max_concurrency as usize));
@@ -94,7 +104,7 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
     loop {
         {
             if let Some(auth) = api_auth.read().await.deref() {
-                large_file_threshold = ((max_bandwidth/max_concurrency) * 600)
+                large_file_threshold = ((max_bandwidth / max_concurrency) * 600)
                     .max(auth.absolute_minimum_part_size)
                     .min(auth.recommended_part_size);
                 break;
@@ -102,7 +112,10 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
         }
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
-    eprintln!("Files larger than {} bytes will use large file API", format_bytes(large_file_threshold));
+    eprintln!(
+        "Files larger than {} bytes will use large file API",
+        format_bytes(large_file_threshold)
+    );
 
     // Start the primary upload task spawning loop
     // This loop manages upload auths and the amount of concurrent uploads
@@ -110,17 +123,31 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
     // A channel is used to return still-valid upload auths after they finish uploading
 
     // Upload tasks can send their UploadAuth back so it can be re-used via this channel
-    let (auth_return_tx, mut auth_return_rx) = tokio::sync::mpsc::channel(ABSOLUTE_MAX_CONCURRENT_UPLOADS as usize);
+    let (auth_return_tx, mut auth_return_rx) =
+        tokio::sync::mpsc::channel(ABSOLUTE_MAX_CONCURRENT_UPLOADS as usize);
     // A task sends work via the rx, the upload loops receives those and spawns the upload tasks
-    let (upload_queue_tx, mut upload_queue_rx) = tokio::sync::mpsc::channel::<PathBuf>(MAXIMUM_ENQUEUED_FILES);
+    let (upload_queue_tx, mut upload_queue_rx) =
+        tokio::sync::mpsc::channel::<PathBuf>(MAXIMUM_ENQUEUED_FILES);
 
     // Vec of (path, modified_timestamp) for files we know are stored in B2
     eprintln!("Retrieving list of known files");
     {
         let files_from_b2 = get_file_list_from_b2(api_auth.clone(), &encryption_key).await;
-        eprintln!("Got file list from B2 -- There are {} files stored", files_from_b2.len());
+        eprintln!(
+            "Got file list from B2 -- There are {} files stored",
+            files_from_b2.len()
+        );
         *known_files.lock().await = files_from_b2;
     }
+
+    // Spawn rebalancer thread
+    // This will rebalance the KnownFiles tree every 10 minutes
+    let known_files_clone = known_files.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(60 * 10));
+        let mut lock = known_files_clone.blocking_lock();
+        lock.rebalance(&StrMapConfig::InMemory).unwrap();
+    });
 
     // Keeps track of whiles files are currently uploading, to prevent simultaneous uploads of the same file
     let currently_uploading: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
@@ -154,7 +181,8 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
                 // Check how much bandwidth is available
                 let available = bandwidth_semaphore_clone.available_permits() as u64;
                 // Add 1/100th, but only up to the maximum value
-                let permits_to_add = (max_bandwidth / 20).max(1).min(max_bandwidth - available) as usize;
+                let permits_to_add =
+                    (max_bandwidth / 20).max(1).min(max_bandwidth - available) as usize;
                 bandwidth_semaphore_clone.add_permits(permits_to_add);
             }
             // ...then check if the bandwidth limit needs to be updated
@@ -167,14 +195,14 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
                             // Minimum of 10KB/s
                             n => n.max(10000),
                         }
-
                     }
                     Err(_) => max_bandwidth,
                 }
             };
             // If the limit was adjusted downwards, we need to drop excess permits
             if max_bandwidth < previous_limit {
-                bandwidth_semaphore_clone.acquire_many(bandwidth_semaphore_clone.available_permits() as u32)
+                bandwidth_semaphore_clone
+                    .acquire_many(bandwidth_semaphore_clone.available_permits() as u32)
                     .await
                     .expect("Unexpected semaphore closure")
                     .forget();
@@ -189,15 +217,22 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
      */
     eprintln!("Getting list of unfinished large files");
     let unfinished_large_files;
-    retry_forever!([1, 3, 5, 10, 30, 60, 600, 1800, 3600], result, {
-        b2_list_unfinished_large_files(api_auth.clone()).await
-    }, {
-        unfinished_large_files = result.files;
-        break;
-    }, {
-        eprintln!("Error while getting list of unfinished large files: {result:?}",);
-    });
-    eprintln!("There are {} unfinished large files", unfinished_large_files.len());
+    retry_forever!(
+        [1, 3, 5, 10, 30, 60, 600, 1800, 3600],
+        result,
+        { b2_list_unfinished_large_files(api_auth.clone()).await },
+        {
+            unfinished_large_files = result.files;
+            break;
+        },
+        {
+            eprintln!("Error while getting list of unfinished large files: {result:?}",);
+        }
+    );
+    eprintln!(
+        "There are {} unfinished large files",
+        unfinished_large_files.len()
+    );
     // For each unfinished large file:
     // * Check the 'modified timestamp' hasn't changed since we initially started the upload
     // * Check the filesize hasn't changed since we started
@@ -228,23 +263,25 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
             }
         };
         let modified_time = match file.file_info.get("src_last_modified_millis") {
-            Some(t) => {
-                match u128::from_str(t) {
-                    Ok(n) => n,
-                    Err(_err) => {
-                        eprintln!("Invalid src_last_modified_millis value: {} -- Cancelling large file", t);
-                        cancel_large_file(api_auth.clone(), file.file_id.clone()).await;
-                        continue;
-                    }
+            Some(t) => match u128::from_str(t) {
+                Ok(n) => n,
+                Err(_err) => {
+                    eprintln!(
+                        "Invalid src_last_modified_millis value: {} -- Cancelling large file",
+                        t
+                    );
+                    cancel_large_file(api_auth.clone(), file.file_id.clone()).await;
+                    continue;
                 }
-            }
+            },
             None => {
                 eprintln!("No src_last_modified_millis value -- Cancelling large file");
                 cancel_large_file(api_auth.clone(), file.file_id.clone()).await;
                 continue;
             }
         };
-        let current_timestamp = metadata.modified()
+        let current_timestamp = metadata
+            .modified()
             .expect("Modified time unsupported!")
             .duration_since(UNIX_EPOCH)
             .map(|dur| dur.as_millis())
@@ -255,16 +292,17 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
             continue;
         }
         let large_file_size = match file.file_info.get("large_file_size") {
-            Some(t) => {
-                match u64::from_str(t) {
-                    Ok(n) => n,
-                    Err(_err) => {
-                        eprintln!("Invalid large_file_size value: {} -- Cancelling large file", t);
-                        cancel_large_file(api_auth.clone(), file.file_id.clone()).await;
-                        continue;
-                    }
+            Some(t) => match u64::from_str(t) {
+                Ok(n) => n,
+                Err(_err) => {
+                    eprintln!(
+                        "Invalid large_file_size value: {} -- Cancelling large file",
+                        t
+                    );
+                    cancel_large_file(api_auth.clone(), file.file_id.clone()).await;
+                    continue;
                 }
-            }
+            },
             None => {
                 eprintln!("No large_file_size value -- Cancelling large file");
                 cancel_large_file(api_auth.clone(), file.file_id.clone()).await;
@@ -272,20 +310,26 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
             }
         };
         if metadata.len() != large_file_size {
-            eprintln!("Size of large file has changed since it was started -- Cancelling large file");
+            eprintln!(
+                "Size of large file has changed since it was started -- Cancelling large file"
+            );
             cancel_large_file(api_auth.clone(), file.file_id.clone()).await;
             continue;
         }
 
-        let parts_list;
-        retry_forever!([1, 3, 5, 10, 30, 60, 600, 1800, 3600], result, {
-            b2_list_parts(api_auth.clone(), file.file_id.clone(), None).await
-        }, {
-             parts_list = result;
-            break;
-        }, {
-            eprintln!("Unexpected error while getting parts list: {result:?}");
-        });
+        let mut parts_list;
+        retry_forever!(
+            [1, 3, 5, 10, 30, 60, 600, 1800, 3600],
+            result,
+            { b2_list_parts(api_auth.clone(), file.file_id.clone(), None).await },
+            {
+                parts_list = result;
+                break;
+            },
+            {
+                eprintln!("Unexpected error while getting parts list: {result:?}");
+            }
+        );
         // If there are no parts on we might as well cancel it at handle it as normal later on...
         if parts_list.parts.is_empty() {
             eprintln!("Large file has no successful parts -- Cancelling large file");
@@ -301,9 +345,6 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
             .expect("Unexpected AcquireError from upload-concurrency-semaphore");
 
         eprintln!("Resuming large file at {path:?}");
-        let max_part_number = parts_list.parts.iter().fold(0, |acc, part| acc.max(part.part_number));
-        let cumulative_parts_size = parts_list.parts.iter().fold(0, |acc, part| acc + part.content_length);
-        eprintln!("Resuming from part {max_part_number} ({cumulative_parts_size} bytes)");
         let auth_clone = api_auth.clone();
         let known_files_clone = known_files.clone();
         let currently_uploading_clone = currently_uploading.clone();
@@ -311,49 +352,55 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
         let bandwidth_semaphore_clone = bandwidth_semaphore.clone();
         let required_nonces = get_nonces_required(metadata.len());
         let start_nonce = match file.file_info.get("large_file_nonce") {
-            Some(t) => {
-                match u128::from_str(t) {
-                    Ok(n) => n,
-                    Err(_err) => {
-                        eprintln!("Invalid large_file_nonce value: {} -- Cancelling large file", t);
-                        cancel_large_file(api_auth.clone(), file.file_id.clone()).await;
-                        continue;
-                    }
+            Some(t) => match u128::from_str(t) {
+                Ok(n) => n,
+                Err(_err) => {
+                    eprintln!(
+                        "Invalid large_file_nonce value: {} -- Cancelling large file",
+                        t
+                    );
+                    cancel_large_file(api_auth.clone(), file.file_id.clone()).await;
+                    continue;
                 }
-            }
+            },
             None => {
                 eprintln!("No large_file_nonce value -- Cancelling large file");
                 cancel_large_file(api_auth.clone(), file.file_id.clone()).await;
                 continue;
             }
         };
-        let part_hashes: Vec<String> = parts_list.parts.into_iter().map(|part| {
-            part.content_sha1
-        }).collect();
+        // Ensure parts are in order
+        parts_list.parts.sort_by_key(|elem| elem.part_number);
+        let part_hashes: Vec<String> = parts_list
+            .parts
+            .into_iter()
+            .map(|part| part.content_sha1)
+            .collect();
+        eprintln!(
+            "Resuming large file at {path:?} from part {}",
+            part_hashes.len() + 1
+        );
 
         {
             currently_uploading.lock().await.push(path.clone());
         }
-        tokio::spawn(
-            resume_large_file(
-                auth_clone,
-                path,
-                file.file_id.clone(),
-                name_nonce,
-                large_file_threshold,
-                current_timestamp,
-                known_files_clone,
-                currently_uploading_clone,
-                key,
-                bandwidth_semaphore_clone,
-                start_nonce,
-                required_nonces,
-                permit,
-                part_hashes,
-                cumulative_parts_size,
-                max_part_number+1,
-            )
-        );
+        tokio::spawn(resume_large_file(
+            auth_clone,
+            path,
+            file.file_id.clone(),
+            metadata,
+            large_file_threshold,
+            current_timestamp,
+            known_files_clone,
+            currently_uploading_clone,
+            key,
+            bandwidth_semaphore_clone,
+            start_nonce,
+            required_nonces,
+            part_hashes,
+            name_nonce,
+            permit,
+        ));
     }
 
     // Sleep until the large files are done
@@ -368,7 +415,7 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
     // Upload loop
     loop {
         // Check if bandwidth limit changed
-        let new_max_bandwidth =  {
+        let new_max_bandwidth = {
             match config.read().await.get_bandwidth() {
                 0 => 1_000_000_000,
                 n => {
@@ -377,28 +424,34 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
                     } else {
                         n
                     }
-                },
+                }
             }
         };
         // If bandwidth limit changed, adjust max concurrency
         if new_max_bandwidth != max_bandwidth {
             eprintln!("Available bandwidth changed, adjusting concurrency limits");
             max_bandwidth = new_max_bandwidth;
-            let new_max_concurrency = (max_bandwidth/100000).min(ABSOLUTE_MAX_CONCURRENT_UPLOADS).max(1);
+            let new_max_concurrency = (max_bandwidth / 100000)
+                .min(ABSOLUTE_MAX_CONCURRENT_UPLOADS)
+                .max(1);
             // If max concurrency changed, add or forget the difference in permits on the semaphore
             if new_max_concurrency != max_concurrency {
                 let diff = (new_max_concurrency as i64) - max_concurrency as i64;
                 match diff {
                     diff if diff > 0 => {
-                        concurrent_uploads_semaphore.clone().add_permits(diff as usize);
-                    },
+                        concurrent_uploads_semaphore
+                            .clone()
+                            .add_permits(diff as usize);
+                    }
                     diff if diff < 0 => {
-                        concurrent_uploads_semaphore.clone().acquire_many_owned(diff.unsigned_abs() as u32)
+                        concurrent_uploads_semaphore
+                            .clone()
+                            .acquire_many_owned(diff.unsigned_abs() as u32)
                             .await
                             .expect("Concurrency semaphore closed")
                             .forget();
                     }
-                    _ => ()
+                    _ => (),
                 };
             }
             eprintln!("New max concurrency limit: {new_max_concurrency}");
@@ -407,10 +460,13 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
             loop {
                 {
                     if let Some(auth) = api_auth.read().await.deref() {
-                        large_file_threshold = ((max_bandwidth/max_concurrency) * 600)
+                        large_file_threshold = ((max_bandwidth / max_concurrency) * 600)
                             .max(auth.absolute_minimum_part_size)
                             .min(auth.recommended_part_size);
-                        eprintln!("Files larger than {} bytes will use large file API", format_bytes(large_file_threshold));
+                        eprintln!(
+                            "Files larger than {} bytes will use large file API",
+                            format_bytes(large_file_threshold)
+                        );
                         break;
                     }
                 }
@@ -419,7 +475,10 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
         }
 
         // Grab the next item to upload
-        let work = upload_queue_rx.recv().await.expect("Unexpected closure of upload queue channel");
+        let work = upload_queue_rx
+            .recv()
+            .await
+            .expect("Unexpected closure of upload queue channel");
 
         // Get the metadata
         // If this fails for whatever reason, assume it's unchanged, since most failures
@@ -434,33 +493,32 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
         };
         // Get the timestamp
         // This should never fail. If it does, there's probably something wrong with the OS...
-        let current_timestamp = metadata.modified()
-                .expect("Modified time unsupported!")
-                .duration_since(UNIX_EPOCH)
-                .map(|dur| dur.as_millis())
-                .expect("System time is before Unix epoch???");
+        let current_timestamp = metadata
+            .modified()
+            .expect("Modified time unsupported!")
+            .duration_since(UNIX_EPOCH)
+            .map(|dur| dur.as_millis())
+            .expect("System time is before Unix epoch???");
 
         // Check if it needs to be uploaded
         let (should_upload, existing_name_nonce) = {
             let f = known_files.lock().await;
-            match f.binary_search_by(|(path, _timestamp, _encrypted_name)| path.cmp(&work)) {
-                Ok(idx) => {
-                    let stored_timestamp = f[idx].1;
-                    // If timestamp is changed, we want to upload the new version...
-                    if current_timestamp != stored_timestamp {
+            match f.get(&work) {
+                Some((stored_timestamp, nonce)) => {
+                    if current_timestamp != *stored_timestamp {
+                        // Check there isn't an upload in-progress for this file
                         let mut current = currently_uploading.lock().await;
-                        // ...unless it's _already_ being uploaded
                         if current.contains(&work) {
                             (false, None)
                         } else {
                             current.push(work.clone());
-                            (true, Some(f[idx].2))
+                            (true, Some(*nonce))
                         }
                     } else {
                         (false, None)
                     }
                 }
-                Err(_) => {
+                None => {
                     // If it isn't stored yet, upload it unless we're already uploading it
                     let mut current = currently_uploading.lock().await;
                     if current.contains(&work) {
@@ -486,7 +544,10 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
         // If the file is "too big", use the large file API to upload in smaller chunks
         // If it's interrupted, this program can resume the progress it had made upon restarting
         if metadata.len() >= large_file_threshold {
-            println!("Preparing upload of {} (large file)", format_bytes(metadata.len()));
+            println!(
+                "Preparing upload of {} (large file)",
+                format_bytes(metadata.len())
+            );
             let auth_clone = api_auth.clone();
             let known_files_clone = known_files.clone();
             let currently_uploading_clone = currently_uploading.clone();
@@ -497,23 +558,22 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
                 let mut cfg = config.write().await;
                 (cfg.get_next_nonce(required_nonces), cfg.get_next_nonce(1))
             };
-            tokio::spawn(
-                upload_large_file(
-                    auth_clone,
-                    work,
-                    large_file_threshold,
-                    existing_name_nonce,
-                    metadata,
-                    current_timestamp,
-                    known_files_clone,
-                    currently_uploading_clone,
-                    key,
-                    bandwidth_semaphore_clone,
-                    start_nonce,
-                    required_nonces,
-                    name_nonce,
-                    permit)
-            );
+            tokio::spawn(upload_large_file(
+                auth_clone,
+                work,
+                large_file_threshold,
+                existing_name_nonce,
+                metadata,
+                current_timestamp,
+                known_files_clone,
+                currently_uploading_clone,
+                key,
+                bandwidth_semaphore_clone,
+                start_nonce,
+                required_nonces,
+                name_nonce,
+                permit,
+            ));
             continue;
         }
 
@@ -530,18 +590,22 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
             Some(auth) => {
                 eprintln!("Re-using old auth");
                 auth
-            },
+            }
             None => {
                 eprintln!("Grabbing fresh UploadAuth");
                 let upauth;
-                retry_forever!([1, 3, 5, 10, 30, 60, 600, 1800, 3600], result, {
-                    backblaze_api::api::b2_get_upload_url(api_auth.clone()).await
-                }, {
-                    upauth = result;
-                    break;
-                }, {
-                    eprintln!("Unexpected error while getting upload auth: {result:?}");
-                });
+                retry_forever!(
+                    [1, 3, 5, 10, 30, 60, 600, 1800, 3600],
+                    result,
+                    { backblaze_api::api::b2_get_upload_url(api_auth.clone()).await },
+                    {
+                        upauth = result;
+                        break;
+                    },
+                    {
+                        eprintln!("Unexpected error while getting upload auth: {result:?}");
+                    }
+                );
                 upauth
             }
         };
@@ -572,7 +636,7 @@ pub async fn supervise(api_auth: Arc<RwLock<Option<Auth>>>, config: Arc<RwLock<C
             name_nonce,
             return_tx,
             permit,
-            auth)
-        );
+            auth,
+        ));
     }
 }
