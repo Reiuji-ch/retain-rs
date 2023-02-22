@@ -86,3 +86,10 @@ subcommands:
             long: overwrite
   - start:
       about: Starts the backup server
+      args:
+        - readonly:
+            help: Start in read-only mode, disabling file sync but still allowing `restore` and other commands to run
+            required: false
+            takes_value: false
+            long: readonly
+            aliases: [read-only]

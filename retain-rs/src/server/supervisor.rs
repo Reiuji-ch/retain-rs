@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
+use clap::ArgMatches;
 use strmap::StrMapConfig;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::MissedTickBehavior;
@@ -26,6 +27,7 @@ pub async fn supervise(
     api_auth: Arc<RwLock<Option<Auth>>>,
     config: Arc<RwLock<Config>>,
     known_files: KnownFiles,
+    args: ArgMatches,
 ) {
     // Spawn the authorization supervisor
     // This tasks tries to ensure we always have Some(Auth) in our api_auth
@@ -153,18 +155,26 @@ pub async fn supervise(
     let currently_uploading: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Spawn task that queues files to be uploaded
-    let cfg_clone = config.clone();
-    tokio::spawn(async move {
-        enqueuer::enqueue_files(cfg_clone, upload_queue_tx).await;
-    });
+    if args.contains_id("readonly") {
+        println!("Read-only mode: disabling 'upload' task");
+    } else {
+        let cfg_clone = config.clone();
+        tokio::spawn(async move {
+            enqueuer::enqueue_files(cfg_clone, upload_queue_tx).await;
+        });
+    }
 
     // Spawn task that hides files which should no longer be uploaded
-    let cfg_clone = config.clone();
-    let auth_clone = api_auth.clone();
-    let known_files_clone = known_files.clone();
-    tokio::spawn(async move {
-        cleaner::hide_unused(cfg_clone, auth_clone, known_files_clone).await;
-    });
+    if args.contains_id("readonly") {
+        println!("Read-only mode: disabling 'hide unused' task");
+    } else {
+        let cfg_clone = config.clone();
+        let auth_clone = api_auth.clone();
+        let known_files_clone = known_files.clone();
+        tokio::spawn(async move {
+            cleaner::hide_unused(cfg_clone, auth_clone, known_files_clone).await;
+        });
+    }
 
     // Task that keeps supplying bandwidth, up to some max buffered amount
     let bandwidth_semaphore_clone = bandwidth_semaphore.clone();
@@ -253,7 +263,12 @@ pub async fn supervise(
                 continue;
             }
         };
-        eprintln!("Resuming upload of {path:?}");
+        if args.contains_id("readonly") {
+            eprintln!("Read-only mode: skipping {path:?}, will retry when not in read-only mode");
+            continue;
+        } else {
+            eprintln!("Resuming upload of {path:?}");
+        }
         let metadata = match tokio::fs::metadata(&path).await {
             Ok(meta) => meta,
             Err(err) => {

@@ -29,12 +29,12 @@ pub fn main() {
     // Either start the full backup service, or handle a one-off command
     // Commands either edit the configuration or send a message to the main service
     match subcommand {
-        ("start", _args) => tokio::runtime::Builder::new_multi_thread()
+        ("start", args) => tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .unwrap()
             .block_on(async {
-                server::serve().await;
+                server::serve(args.clone()).await;
             }),
         (cmd, args) => {
             commands::process_command(cmd, args);

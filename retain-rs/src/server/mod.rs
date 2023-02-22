@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use chacha20poly1305::aead::Aead;
 use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305};
+use clap::ArgMatches;
 use glob::Pattern;
 use strmap::{PathMap, StrMapConfig};
 use tokio::io::AsyncWriteExt;
@@ -36,8 +37,12 @@ mod upload_large_file;
 type KnownFiles = Arc<Mutex<PathMap<(u128, u128)>>>;
 
 /// Starts the main processing loop
-pub async fn serve() {
+pub async fn serve(args: ArgMatches) {
     println!("Server starting");
+    if args.contains_id("readonly") {
+        println!("Read-only mode: no files will be uploaded/removed to/from b2");
+        println!("All client commands will continue to work in read-only");
+    }
 
     backblaze_api::init();
 
@@ -70,6 +75,7 @@ pub async fn serve() {
         api_auth.clone(),
         config.clone(),
         known_files.clone(),
+        args,
     ));
 
     // Main loop: listen for and process commands
