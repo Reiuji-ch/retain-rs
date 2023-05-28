@@ -43,6 +43,9 @@ pub struct Config {
     // How many nonces we can use, before we need to update `nonce` and save the config
     #[serde(skip)]
     available_nonces: u128,
+    // If true, enables "fast-scanning" of the filesystem to upload/hide files faster
+    #[serde(skip)]
+    turbo_mode: bool,
 }
 
 impl Config {
@@ -189,6 +192,14 @@ impl Config {
         // Since we just subtracted `required` from available, we can find the start nonce like so:
         (self.nonce - self.available_nonces) - required
     }
+
+    pub fn is_turbo_mode(&self) -> bool {
+        return self.turbo_mode;
+    }
+
+    pub fn set_turbo_mode(&mut self, enabled: bool) {
+        self.turbo_mode = enabled;
+    }
 }
 
 /// Attempt to discover a config file
@@ -266,6 +277,7 @@ impl Default for Config {
             encryption_key: Some(key),
             nonce: 0,
             available_nonces: 0,
+            turbo_mode: false,
         }
     }
 }

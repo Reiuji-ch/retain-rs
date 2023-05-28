@@ -21,6 +21,7 @@ pub async fn hide_unused(
     known_files: KnownFiles,
 ) {
     let mut rules = { config.write().await.get_rules() };
+    let mut turbo_mode = { config.write().await.is_turbo_mode() };
 
     // last_recheck and recheck_interval are used to periodically poll for changes to the rules
     let mut last_recheck = Instant::now();
@@ -34,7 +35,10 @@ pub async fn hide_unused(
     let mut last_path = PathBuf::from_str("").unwrap();
     loop {
         // Sleep a bit to avoid hammering the filesystem
-        tokio::time::sleep(Duration::from_millis(2)).await;
+        // If turbo mode is enabled, skip this to scan faster
+        if !turbo_mode {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
         // Update our rules if it's been too long since we last did it
         if last_recheck.elapsed() > recheck_interval {
             last_recheck = Instant::now();
@@ -42,6 +46,7 @@ pub async fn hide_unused(
             if should_refetch {
                 eprintln!("Reloading rules");
                 rules = config.write().await.get_rules();
+                turbo_mode = config.write().await.is_turbo_mode();
             }
         }
         let file = {

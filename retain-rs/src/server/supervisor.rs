@@ -21,7 +21,7 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::MissedTickBehavior;
 
 const ABSOLUTE_MAX_CONCURRENT_UPLOADS: u64 = 16;
-const MAXIMUM_ENQUEUED_FILES: usize = 32;
+const MAXIMUM_ENQUEUED_FILES: usize = 256;
 
 pub async fn supervise(
     api_auth: Arc<RwLock<Option<Auth>>>,

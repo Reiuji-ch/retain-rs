@@ -93,3 +93,9 @@ subcommands:
             takes_value: false
             long: readonly
             aliases: [read-only]
+        - turbo:
+            help: Enable turbo-mode, speeding up upload/hiding, but increases disk usage
+            required: false
+            takes_value: false
+            long: turbo
+            aliases: [ turbo-mode, turbomode, turbo_mode ]

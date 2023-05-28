@@ -46,7 +46,10 @@ pub async fn serve(args: ArgMatches) {
 
     backblaze_api::init();
 
-    let config = Config::load().expect("Failed to load config");
+    let mut config = Config::load().expect("Failed to load config");
+    if args.contains_id("turbo") {
+        config.set_turbo_mode(true);
+    }
 
     // Bind a port, determined by the OS.
     // Write the port to a file, so other programs knows where to connect

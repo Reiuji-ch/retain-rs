@@ -191,6 +191,9 @@ pub async fn stats(mut config: Config) {
 pub async fn list_includes(mut config: Config) {
     println!("List of currently included directories:");
     for include in config.get_rules().get_includes() {
+        if !Path::new(include).exists() {
+            print!("NOT FOUND - ");
+        }
         println!("{include}");
     }
 }
