@@ -40,7 +40,7 @@ pub async fn enqueue_files(config: Arc<RwLock<Config>>, sender: Sender<std::path
                 // Verify that the current include rule is still valid
                 // It must still be in the includes list, and not removed by a filter
                 // Note that we don't skip if a _subdirectory_ of an include has been invalidated
-                if !(rules.should_upload(Path::new(&current_include))
+                if !(rules.allowed_by_filters(Path::new(&current_include))
                     && rules.get_includes().contains(&current_include))
                 {
                     // Current rule is no longer valid, reset tracking
@@ -80,7 +80,7 @@ pub async fn enqueue_files(config: Arc<RwLock<Config>>, sender: Sender<std::path
                     }
                 };
                 let path = item.path();
-                if !rules.should_upload(&path) {
+                if !rules.allowed_by_filters(&path) {
                     continue;
                 }
 
@@ -121,7 +121,7 @@ pub async fn enqueue_files(config: Arc<RwLock<Config>>, sender: Sender<std::path
                         }
                         .to_string();
                         let path = Path::new(&current_include);
-                        if path.is_file() && rules.should_upload(path) {
+                        if path.is_file() && rules.allowed_by_filters(path) {
                             sender
                                 .send(path.to_path_buf())
                                 .await

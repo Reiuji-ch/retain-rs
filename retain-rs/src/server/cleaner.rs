@@ -63,8 +63,8 @@ pub async fn hide_unused(
             let mut should_hide = false;
 
             if path.exists() {
-                if !rules.should_upload(&path) {
-                    // File exists but is no longer covered by rules, hide it in B2
+                // If it isn't included or isn't allowed by filters, hide it
+                if !rules.is_included(&path) || !rules.allowed_by_filters(&path) {
                     should_hide = true;
                 }
             } else {

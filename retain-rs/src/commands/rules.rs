@@ -109,7 +109,7 @@ async fn usage_by_path<P: AsRef<Path>>(path: P, config: &mut Config) -> (u64, u6
     let mut total_included_files = 0;
     while let Some(path) = dirs_to_check.pop() {
         if path.is_file() {
-            if rules.should_upload(&path) {
+            if rules.allowed_by_filters(&path) {
                 total_included_files += 1;
                 total_included_bytes +=
                     get_encrypted_size(path.metadata().expect("Failed to stat file").len());
@@ -120,10 +120,10 @@ async fn usage_by_path<P: AsRef<Path>>(path: P, config: &mut Config) -> (u64, u6
             match entry {
                 Ok(entry) => {
                     if entry.path().is_dir() {
-                        if rules.should_upload(&entry.path()) {
+                        if rules.allowed_by_filters(&entry.path()) {
                             dirs_to_check.push(entry.path().to_path_buf());
                         }
-                    } else if rules.should_upload(&entry.path()) {
+                    } else if rules.allowed_by_filters(&entry.path()) {
                         total_included_files += 1;
                         total_included_bytes += get_encrypted_size(
                             entry.metadata().expect("Failed to stat file").len(),

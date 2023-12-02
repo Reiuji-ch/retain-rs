@@ -131,6 +131,16 @@ impl RuleManager {
         &self.includes
     }
 
+    /// Returns whether a given path is contained within any of the included paths
+    pub fn is_included(&self, path: &Path) -> bool {
+        for include in &self.includes {
+            if path.starts_with(Path::new(include)) {
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn get_filters(&self) -> &Vec<Pattern> {
         if !self.filters_validated {
             panic!("Attempt to use non-validated filters!");
@@ -160,7 +170,8 @@ impl RuleManager {
         Ok(removed_filters)
     }
 
-    pub fn should_upload(&self, path: &Path) -> bool {
+    /// Returns whether a given file is allowed to be uploaded, i.e. not blocked by any filters
+    pub fn allowed_by_filters(&self, path: &Path) -> bool {
         if !self.filters_validated {
             panic!("Attempt to use non-validated filters!");
         }
