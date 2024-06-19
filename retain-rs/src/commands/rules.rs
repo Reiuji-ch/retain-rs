@@ -190,7 +190,9 @@ pub async fn stats(mut config: Config) {
 
 pub async fn list_includes(mut config: Config) {
     println!("List of currently included directories:");
-    for include in config.get_rules().get_includes() {
+    let mut includes = config.get_rules().get_includes().clone();
+    includes.sort();
+    for include in &includes {
         if !Path::new(include).exists() {
             print!("NOT FOUND - ");
         }
@@ -200,7 +202,9 @@ pub async fn list_includes(mut config: Config) {
 
 pub async fn list_filters(mut config: Config) {
     println!("List of currently active filters:");
-    for filter in config.get_rules().get_filters() {
+    let mut filters = config.get_rules().get_filters().clone();
+    filters.sort();
+    for filter in &filters {
         println!("{}", filter.as_str());
     }
 }
